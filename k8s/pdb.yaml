@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: jio20-session
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: jio20-session
+
+

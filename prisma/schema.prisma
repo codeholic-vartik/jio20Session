@@ -1,0 +1,1065 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["backend", "frontend", "inventory", "sales", "session", "tax"]
+}
+
+model backend_token_blacklist {
+  jti            String    @id @db.VarChar(64)
+  token          String
+  blacklisted_at DateTime? @db.Timestamp(6)
+  expires_at     DateTime  @db.Timestamp(6)
+  reason         String?   @db.VarChar
+
+  @@index([jti], map: "ix_backend_backend_token_blacklist_jti")
+  @@schema("backend")
+}
+
+model backendpermissions {
+  id                     Int                      @id @default(autoincrement())
+  permission             String                   @db.VarChar(255)
+  type                   Int
+  codename               String                   @unique(map: "ix_backend_backendpermissions_codename") @db.VarChar(50)
+  backendrolepermissions backendrolepermissions[]
+
+  @@index([id], map: "ix_backend_backendpermissions_id")
+  @@schema("backend")
+}
+
+model backendrolepermissions {
+  id                 Int                @id @default(autoincrement())
+  role_id            Int
+  permission_id      Int
+  backendpermissions backendpermissions @relation(fields: [permission_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  backendroles       backendroles       @relation(fields: [role_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([id], map: "ix_backend_backendrolepermissions_id")
+  @@schema("backend")
+}
+
+model backendroles {
+  id                     Int                      @id @default(autoincrement())
+  ruid                   String?                  @unique(map: "ix_backend_backendroles_ruid") @db.VarChar(50)
+  title                  String?                  @unique @db.VarChar(50)
+  is_deleted             Boolean?
+  created_by             Int?
+  created_at             DateTime?                @db.Timestamp(6)
+  updated_at             DateTime?                @db.Timestamp(6)
+  backendrolepermissions backendrolepermissions[]
+  backendusers           backendusers?            @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([id], map: "ix_backend_backendroles_id")
+  @@schema("backend")
+}
+
+model backendtokens {
+  id           Int          @id @default(autoincrement())
+  token        String       @unique(map: "ix_backend_backendtokens_token")
+  jti          String       @unique(map: "ix_backend_backendtokens_jti") @db.VarChar(64)
+  user_id      Int
+  details      String?      @db.VarChar(255)
+  created_at   DateTime?    @db.Timestamp(6)
+  expire_at    DateTime?    @db.Timestamp(6)
+  backendusers backendusers @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_backend_backendtokens_id")
+  @@index([jti], map: "ix_backendtokens_jti")
+  @@index([token], map: "ix_backendtokens_token")
+  @@index([user_id], map: "ix_backendtokens_user_id")
+  @@schema("backend")
+}
+
+model backendusers {
+  id                 Int                @id @default(autoincrement())
+  uuid               String             @unique(map: "ix_backend_backendusers_uuid") @db.VarChar(50)
+  username           String?            @unique(map: "ix_backend_backendusers_username") @db.VarChar(50)
+  email              String?            @unique(map: "ix_backend_backendusers_email") @db.VarChar(255)
+  password           String             @db.VarChar(255)
+  first_name         String?            @db.VarChar(100)
+  last_name          String?            @db.VarChar(100)
+  phone_number       String?            @db.VarChar(20)
+  role_id            Int?
+  created_by         Int?
+  verification_token String?            @unique @db.VarChar(255)
+  email_verified_at  DateTime?          @db.Timestamp(6)
+  is_active          Boolean?
+  is_deleted         Boolean?
+  created_at         DateTime?          @db.Timestamp(6)
+  updated_at         DateTime?          @db.Timestamp(6)
+  backendroles       backendroles[]
+  backendtokens      backendtokens[]
+  product_taxonomy   product_taxonomy[]
+  products           products[]
+  taxonomy_terms     taxonomy_terms[]
+  session_profiles   session_profiles[]
+  tax_profiles       tax_profiles[]
+
+  @@index([id], map: "ix_backend_backendusers_id")
+  @@index([email], map: "ix_backendusers_email")
+  @@index([username], map: "ix_backendusers_username")
+  @@index([uuid], map: "ix_backendusers_uuid")
+  @@schema("backend")
+}
+
+model frontend_social_accounts {
+  id            Int           @id @default(autoincrement())
+  user_id       Int
+  provider      String        @db.VarChar(50)
+  social_token  String?
+  created_at    DateTime?     @db.Timestamp(6)
+  frontendusers frontendusers @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_frontend_frontend_social_accounts_id")
+  @@schema("frontend")
+}
+
+model frontend_timezones {
+  id              Int     @id @default(autoincrement())
+  title           String? @db.VarChar(255)
+  code            String? @unique @db.VarChar(255)
+  time_difference String? @db.VarChar(50)
+
+  @@index([id], map: "ix_frontend_frontend_timezones_id")
+  @@schema("frontend")
+}
+
+model frontend_token_blacklist {
+  jti            String    @id @db.VarChar(64)
+  token          String
+  blacklisted_at DateTime? @db.Timestamp(6)
+  expires_at     DateTime  @db.Timestamp(6)
+  reason         String?   @db.VarChar
+
+  @@index([jti], map: "ix_frontend_frontend_token_blacklist_jti")
+  @@schema("frontend")
+}
+
+model frontendtokens {
+  id            Int            @id @default(autoincrement())
+  token         String?        @unique(map: "ix_frontend_frontendtokens_token")
+  jti           String         @unique(map: "ix_frontend_frontendtokens_jti") @db.VarChar(64)
+  user_id       Int?
+  details       String?        @db.VarChar(255)
+  created_at    DateTime?      @db.Timestamp(6)
+  expire_at     DateTime?      @db.Timestamp(6)
+  frontendusers frontendusers? @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_frontend_frontendtokens_id")
+  @@schema("frontend")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model frontendusers {
+  id                                            Int                        @id @default(autoincrement())
+  uuid                                          String                     @unique(map: "ix_frontend_frontendusers_uuid") @db.VarChar(50)
+  first_name                                    String?                    @db.VarChar(50)
+  last_name                                     String?                    @db.VarChar(50)
+  username                                      String?                    @unique(map: "ix_frontend_frontendusers_username") @db.VarChar(50)
+  phone_number                                  String?                    @unique(map: "ix_frontend_frontendusers_phone_number") @db.VarChar(20)
+  email                                         String?                    @unique(map: "ix_frontend_frontendusers_email") @db.VarChar(255)
+  password                                      String?                    @db.VarChar(255)
+  verification_token                            String?                    @unique @db.VarChar(255)
+  email_otp                                     String?                    @db.VarChar(8)
+  email_otp_expired_at                          DateTime?                  @db.Timestamptz(6)
+  email_verified_at                             DateTime?                  @db.Timestamptz(6)
+  phone_otp                                     String?                    @db.VarChar(8)
+  otp_expired_at                                DateTime?                  @db.Timestamptz(6)
+  otp_verified_at                               DateTime?                  @db.Timestamptz(6)
+  meta                                          Json?                      @db.Json
+  otp_attempts                                  Int?
+  is_blocked                                    Boolean?
+  blocked_until                                 DateTime?                  @db.Timestamptz(6)
+  last_otp_sent_at                              DateTime?                  @db.Timestamptz(6)
+  storage_token                                 String?
+  storage_platform                              String?                    @db.VarChar(10)
+  language                                      String?                    @db.VarChar(10)
+  timezone                                      String?                    @db.VarChar(50)
+  profile_photo                                 String?                    @db.VarChar(50)
+  is_active                                     Boolean?
+  is_deleted                                    Boolean?
+  created_at                                    DateTime?                  @db.Timestamptz(6)
+  updated_at                                    DateTime?                  @db.Timestamptz(6)
+  frontend_social_accounts                      frontend_social_accounts[]
+  frontendtokens                                frontendtokens[]
+  customer_addresses                            customer_addresses[]
+  customer_sales                                customer_sales[]
+  customers_customers_created_byTofrontendusers customers[]                @relation("customers_created_byTofrontendusers")
+  customers_customers_deleted_byTofrontendusers customers[]                @relation("customers_deleted_byTofrontendusers")
+  orders                                        orders[]
+  session_coupons                               session_coupons[]
+  session_participants                          session_participants[]
+  session_rewards                               session_rewards[]
+
+  @@index([id], map: "ix_frontend_frontendusers_id")
+  @@schema("frontend")
+}
+
+model coupons {
+  id                     Int                      @id @default(autoincrement())
+  cuid                   String                   @unique(map: "ix_inventory_coupons_cuid") @db.VarChar(255)
+  title                  String                   @db.VarChar(100)
+  code                   String                   @unique @db.VarChar(100)
+  discount_type          String                   @db.VarChar(20)
+  discount_value         Decimal                  @db.Decimal(10, 2)
+  start_date             DateTime                 @db.Timestamp(6)
+  end_date               DateTime                 @db.Timestamp(6)
+  coupon_type            String?                  @db.VarChar(50)
+  is_global              Boolean
+  is_active              Boolean?
+  is_deleted             Boolean?
+  usage_limit            Int?
+  usage_limit_per_user   Int?
+  times_used             Int
+  min_purchase_amount    Decimal?                 @db.Decimal(10, 2)
+  max_discount_amount    Decimal?                 @db.Decimal(10, 2)
+  is_stackable           Boolean?
+  created_at             DateTime?                @db.Timestamp(6)
+  updated_at             DateTime?                @db.Timestamp(6)
+  customer_sales         customer_sales[]
+  product_coupons        product_coupons[]
+  taxonomy_terms_coupons taxonomy_terms_coupons[]
+  session_profiles       session_profiles[]
+  session_rewards        session_rewards[]
+
+  @@index([is_active], map: "ix_coupon_active")
+  @@index([coupon_type], map: "ix_coupon_type")
+  @@index([id], map: "ix_inventory_coupons_id")
+  @@index([is_active], map: "ix_inventory_coupons_is_active")
+  @@index([is_deleted], map: "ix_inventory_coupons_is_deleted")
+  @@schema("inventory")
+}
+
+model customer_addresses {
+  id             Int              @id @default(autoincrement())
+  cauid          String           @unique(map: "ix_inventory_customer_addresses_cauid") @db.VarChar(255)
+  customer_id    Int
+  first_name     String?          @db.VarChar(100)
+  last_name      String?          @db.VarChar(100)
+  email          String?          @db.VarChar(255)
+  phone_number   String?          @db.VarChar(20)
+  address_line1  String           @db.VarChar(255)
+  address_line2  String?          @db.VarChar(255)
+  pincode        String           @db.VarChar(10)
+  landmark       String?          @db.VarChar(100)
+  city           String           @db.VarChar(50)
+  state          String           @db.VarChar(50)
+  country        String           @db.VarChar(50)
+  address_tag    String?          @db.VarChar(20)
+  is_active      Boolean?
+  is_deleted     Boolean?
+  deleted_by     Int?
+  created_at     DateTime?        @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime?        @default(now()) @db.Timestamptz(6)
+  customers      customers        @relation(fields: [customer_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  frontendusers  frontendusers?   @relation(fields: [deleted_by], references: [id], onUpdate: NoAction)
+  customer_sales customer_sales[]
+  orders         orders[]
+
+  @@index([customer_id], map: "ix_inventory_customer_addresses_customer_id")
+  @@index([id], map: "ix_inventory_customer_addresses_id")
+  @@schema("inventory")
+}
+
+model customer_sale_items {
+  id                 Int              @id @default(autoincrement())
+  csiuid             String           @unique(map: "ix_inventory_customer_sale_items_csiuid") @db.VarChar(255)
+  sale_id            Int
+  product_id         Int?
+  batch_id           Int?
+  quantity           Int
+  unit_price         Int?
+  sale_item_metadata Json?            @db.Json
+  product_batches    product_batches? @relation(fields: [batch_id], references: [id], onUpdate: NoAction)
+  products           products?        @relation(fields: [product_id], references: [id], onUpdate: NoAction)
+  customer_sales     customer_sales   @relation(fields: [sale_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_inventory_customer_sale_items_id")
+  @@index([sale_id], map: "ix_inventory_customer_sale_items_sale_id")
+  @@schema("inventory")
+}
+
+model customer_sales {
+  id                  Int                   @id @default(autoincrement())
+  csuid               String                @unique(map: "ix_inventory_customer_sales_csuid") @db.VarChar(255)
+  invoice_number      String?               @unique(map: "ix_inventory_customer_sales_invoice_number") @db.VarChar(100)
+  customer_id         Int?
+  address_id          Int?
+  sale_date           DateTime?             @default(now()) @db.Timestamptz(6)
+  remarks             String?               @db.VarChar(255)
+  status              String?               @db.VarChar(50)
+  total_amount        Int?
+  discount_amount     Int?
+  coupon_id           Int?
+  sale_metadata       Json?                 @db.Json
+  created_by          Int?
+  created_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  customer_sale_items customer_sale_items[]
+  customer_addresses  customer_addresses?   @relation(fields: [address_id], references: [id], onUpdate: NoAction)
+  coupons             coupons?              @relation(fields: [coupon_id], references: [id], onUpdate: NoAction)
+  frontendusers       frontendusers?        @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  customers           customers?            @relation(fields: [customer_id], references: [id], onUpdate: NoAction)
+
+  @@index([id], map: "ix_inventory_customer_sales_id")
+  @@schema("inventory")
+}
+
+model customers {
+  id                                                Int                  @id @default(autoincrement())
+  cuuid                                             String               @unique(map: "ix_inventory_customers_cuuid") @db.VarChar(255)
+  first_name                                        String?              @db.VarChar(50)
+  last_name                                         String?              @db.VarChar(50)
+  email                                             String?              @unique(map: "ix_inventory_customers_email") @db.VarChar(255)
+  secondary_email                                   String?              @db.VarChar(255)
+  phone                                             String?              @unique(map: "ix_inventory_customers_phone") @db.VarChar(15)
+  secondary_phone                                   String?              @db.VarChar(15)
+  tag                                               String?              @db.VarChar(10)
+  created_by                                        Int?
+  deleted_by                                        Int?
+  is_active                                         Boolean?
+  is_deleted                                        Boolean?
+  created_at                                        DateTime?            @default(now()) @db.Timestamptz(6)
+  updated_at                                        DateTime?            @default(now()) @db.Timestamptz(6)
+  customer_addresses                                customer_addresses[]
+  customer_sales                                    customer_sales[]
+  frontendusers_customers_created_byTofrontendusers frontendusers?       @relation("customers_created_byTofrontendusers", fields: [created_by], references: [id], onUpdate: NoAction)
+  frontendusers_customers_deleted_byTofrontendusers frontendusers?       @relation("customers_deleted_byTofrontendusers", fields: [deleted_by], references: [id], onUpdate: NoAction)
+
+  @@index([id], map: "ix_inventory_customers_id")
+  @@schema("inventory")
+}
+
+model product_batches {
+  id                    Int                   @id @default(autoincrement())
+  pbuid                 String                @unique(map: "ix_inventory_product_batches_pbuid") @db.VarChar(255)
+  batch_code            String                @db.VarChar(100)
+  product_id            Int
+  vendor_id             Int?
+  parent_batch_id       Int?
+  manufacture_date      DateTime?             @db.Timestamptz(6)
+  expiry_date           DateTime?             @db.Timestamptz(6)
+  initial_quantity      Int
+  unit_cost             Float?
+  currency              String                @db.VarChar(10)
+  status                String                @db.VarChar(50)
+  remarks               Json?                 @db.Json
+  meta                  Json?                 @db.Json
+  batch_type            String                @db.VarChar(50)
+  tracking_type         String?               @db.VarChar(32)
+  is_deleted            Boolean?
+  created_at            DateTime?             @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime?             @default(now()) @db.Timestamptz(6)
+  customer_sale_items   customer_sale_items[]
+  product_batches       product_batches?      @relation("product_batchesToproduct_batches", fields: [parent_batch_id], references: [id], onUpdate: NoAction)
+  other_product_batches product_batches[]     @relation("product_batchesToproduct_batches")
+  products              products              @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  vendor                vendor?               @relation(fields: [vendor_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product_units         product_units[]
+  stock_movements       stock_movements[]
+  stock_quantities      stock_quantities[]
+
+  @@unique([product_id, batch_code], map: "uq_product_batch_code")
+  @@index([batch_code], map: "ix_inventory_product_batches_batch_code")
+  @@index([id], map: "ix_inventory_product_batches_id")
+  @@index([is_deleted], map: "ix_inventory_product_batches_is_deleted")
+  @@index([parent_batch_id], map: "ix_inventory_product_batches_parent_batch_id")
+  @@index([product_id], map: "ix_inventory_product_batches_product_id")
+  @@index([vendor_id], map: "ix_inventory_product_batches_vendor_id")
+  @@schema("inventory")
+}
+
+model product_coupons {
+  id         Int      @id @default(autoincrement())
+  product_id Int
+  coupon_id  Int
+  is_enabled Boolean
+  created_at DateTime @db.Timestamptz(6)
+  updated_at DateTime @db.Timestamptz(6)
+  coupons    coupons  @relation(fields: [coupon_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  products   products @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([product_id, coupon_id], map: "uq_product_coupon")
+  @@index([id], map: "ix_inventory_product_coupons_id")
+  @@schema("inventory")
+}
+
+model product_images {
+  id         Int       @id @default(autoincrement())
+  piuid      String    @unique(map: "ix_inventory_product_images_piuid") @db.VarChar
+  product_id Int
+  image_url  String    @db.VarChar(255)
+  is_primary Boolean?
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at DateTime? @default(now()) @db.Timestamptz(6)
+  products   products  @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_inventory_product_images_id")
+  @@index([product_id], map: "ix_inventory_product_images_product_id")
+  @@schema("inventory")
+}
+
+model product_services {
+  id           Int      @id @default(autoincrement())
+  product_id   Int
+  service_id   Int
+  is_mandatory Boolean
+  is_active    Boolean
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @db.Timestamptz(6)
+  products     products @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  services     services @relation(fields: [service_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_inventory_product_services_id")
+  @@index([product_id], map: "ix_inventory_product_services_product_id")
+  @@index([service_id], map: "ix_inventory_product_services_service_id")
+  @@schema("inventory")
+}
+
+model product_taxonomy {
+  id                     Int                      @id @default(autoincrement())
+  ptuid                  String                   @unique(map: "ix_inventory_product_taxonomy_ptuid") @db.VarChar
+  slug                   String                   @unique(map: "ix_inventory_product_taxonomy_slug") @db.VarChar(150)
+  title                  String                   @db.VarChar(50)
+  description            String?                  @db.VarChar(255)
+  is_active              Boolean?
+  parent_id              Int?
+  created_by             Int?
+  is_preserved           Boolean
+  index_order            Int?
+  created_at             DateTime?                @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime?                @default(now()) @db.Timestamptz(6)
+  backendusers           backendusers?            @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  product_taxonomy       product_taxonomy?        @relation("product_taxonomyToproduct_taxonomy", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  other_product_taxonomy product_taxonomy[]       @relation("product_taxonomyToproduct_taxonomy")
+  product_taxonomy_terms product_taxonomy_terms[]
+  taxonomy_terms         taxonomy_terms[]
+
+  @@index([id], map: "ix_inventory_product_taxonomy_id")
+  @@index([index_order], map: "ix_inventory_product_taxonomy_index_order")
+  @@index([is_preserved], map: "ix_inventory_product_taxonomy_is_preserved")
+  @@schema("inventory")
+}
+
+model product_taxonomy_terms {
+  id               Int              @id @default(autoincrement())
+  product_id       Int
+  term_id          Int
+  taxonomy_id      Int
+  display_order    Int?
+  products         products         @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product_taxonomy product_taxonomy @relation(fields: [taxonomy_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  taxonomy_terms   taxonomy_terms   @relation(fields: [term_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([product_id, term_id], map: "uq_product_term")
+  @@index([id], map: "ix_inventory_product_taxonomy_terms_id")
+  @@index([product_id], map: "ix_inventory_product_taxonomy_terms_product_id")
+  @@index([taxonomy_id], map: "ix_inventory_product_taxonomy_terms_taxonomy_id")
+  @@index([term_id], map: "ix_inventory_product_taxonomy_terms_term_id")
+  @@schema("inventory")
+}
+
+model product_units {
+  id              Int              @id @default(autoincrement())
+  unit_code       String           @unique(map: "ix_inventory_product_units_unit_code") @db.VarChar(100)
+  product_id      Int
+  batch_id        Int
+  location_id     Int?
+  status          String           @db.VarChar(32)
+  meta            Json?            @db.Json
+  created_at      DateTime?        @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime?        @default(now()) @db.Timestamptz(6)
+  product_batches product_batches  @relation(fields: [batch_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  stock_locations stock_locations? @relation(fields: [location_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  products        products         @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([batch_id], map: "ix_inventory_product_units_batch_id")
+  @@index([id], map: "ix_inventory_product_units_id")
+  @@index([location_id], map: "ix_inventory_product_units_location_id")
+  @@index([product_id], map: "ix_inventory_product_units_product_id")
+  @@index([status], map: "ix_inventory_product_units_status")
+  @@schema("inventory")
+}
+
+model products {
+  id                     Int                      @id @default(autoincrement())
+  puid                   String                   @unique @db.VarChar
+  slug                   String                   @unique(map: "ix_inventory_products_slug") @db.VarChar(150)
+  title                  String                   @db.VarChar(100)
+  description            String?
+  sku                    String?                  @unique(map: "ix_inventory_products_sku") @db.VarChar(100)
+  barcode                String?                  @unique(map: "ix_inventory_products_barcode") @db.VarChar(100)
+  original_price         Decimal                  @db.Decimal(10, 2)
+  current_price          Decimal                  @db.Decimal(10, 2)
+  is_active              Boolean?
+  is_deleted             Boolean?
+  purchasable            Boolean
+  rewardable             Boolean
+  created_by             Int
+  product_type           String                   @db.VarChar(20)
+  manufactured_at        DateTime?                @db.Timestamptz(6)
+  expired_at             DateTime?                @db.Timestamptz(6)
+  meta                   Json?                    @db.Json
+  tax_inclusive          Boolean
+  tax_profile_id         Int?
+  created_at             DateTime?                @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime?                @default(now()) @db.Timestamptz(6)
+  customer_sale_items    customer_sale_items[]
+  product_batches        product_batches[]
+  product_coupons        product_coupons[]
+  product_images         product_images[]
+  product_services       product_services[]
+  product_taxonomy_terms product_taxonomy_terms[]
+  product_units          product_units[]
+  backendusers           backendusers             @relation(fields: [created_by], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  tax_profiles           tax_profiles?            @relation(fields: [tax_profile_id], references: [id], onUpdate: NoAction)
+  stock_movements        stock_movements[]
+  stock_quantities       stock_quantities[]
+  order_items            order_items[]
+  session_coupons        session_coupons[]
+  session_profiles       session_profiles[]
+  session_rewards        session_rewards[]
+
+  @@index([id], map: "ix_inventory_products_id")
+  @@index([product_type], map: "ix_inventory_products_product_type")
+  @@index([purchasable], map: "ix_inventory_products_purchasable")
+  @@index([rewardable], map: "ix_inventory_products_rewardable")
+  @@index([tax_profile_id], map: "ix_inventory_products_tax_profile_id")
+  @@index([title], map: "ix_inventory_products_title")
+  @@schema("inventory")
+}
+
+model services {
+  id               Int                @id @default(autoincrement())
+  svuid            String             @unique(map: "ix_inventory_services_svuid") @db.VarChar(50)
+  name             String             @db.VarChar(100)
+  description      String?            @db.VarChar(255)
+  base_price       Decimal            @db.Decimal(10, 2)
+  apply_on         String             @db.VarChar(20)
+  tax_inclusive    Boolean
+  tax_profile_id   Int?
+  is_active        Boolean?
+  is_deleted       Boolean?
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime           @default(now()) @db.Timestamptz(6)
+  product_services product_services[]
+  tax_profiles     tax_profiles?      @relation(fields: [tax_profile_id], references: [id], onUpdate: NoAction)
+  order_services   order_services[]
+
+  @@index([id], map: "ix_inventory_services_id")
+  @@index([is_deleted], map: "ix_inventory_services_is_deleted")
+  @@index([name], map: "ix_inventory_services_name")
+  @@index([tax_profile_id], map: "ix_inventory_services_tax_profile_id")
+  @@schema("inventory")
+}
+
+model stock_locations {
+  id               Int                @id @default(autoincrement())
+  tenant_id        Int
+  sluid            String             @unique(map: "ix_inventory_stock_locations_sluid") @db.VarChar(255)
+  code             String             @unique(map: "ix_inventory_stock_locations_code") @db.VarChar(50)
+  name             String             @db.VarChar(100)
+  type             String             @db.VarChar(30)
+  address1         String?            @db.VarChar(255)
+  address2         String?            @db.VarChar(255)
+  city             String?            @db.VarChar(100)
+  state            String?            @db.VarChar(100)
+  country          String?            @db.VarChar(100)
+  remarks          Json?              @db.Json
+  meta             Json?              @db.Json
+  is_active        Boolean?
+  is_deleted       Boolean
+  created_at       DateTime?          @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime?          @default(now()) @db.Timestamptz(6)
+  product_units    product_units[]
+  tenants          tenants            @relation(fields: [tenant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  stock_quantities stock_quantities[]
+
+  @@index([address1], map: "ix_inventory_stock_locations_address1")
+  @@index([address2], map: "ix_inventory_stock_locations_address2")
+  @@index([city], map: "ix_inventory_stock_locations_city")
+  @@index([country], map: "ix_inventory_stock_locations_country")
+  @@index([id], map: "ix_inventory_stock_locations_id")
+  @@index([is_deleted], map: "ix_inventory_stock_locations_is_deleted")
+  @@index([name], map: "ix_inventory_stock_locations_name")
+  @@index([state], map: "ix_inventory_stock_locations_state")
+  @@index([tenant_id], map: "ix_inventory_stock_locations_tenant_id")
+  @@schema("inventory")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model stock_movements {
+  id                Int             @id @default(autoincrement())
+  smuid             String          @unique(map: "ix_inventory_stock_movements_smuid") @db.VarChar(255)
+  product_id        Int
+  batch_id          Int
+  from_entity_type  String?         @db.VarChar(64)
+  from_entity_id    Int?
+  to_entity_type    String?         @db.VarChar(64)
+  to_entity_id      Int?
+  vendor_id         Int?
+  quantity          Int
+  movement_type     String          @db.VarChar(50)
+  status            String          @db.VarChar(20)
+  tracking_type     String?         @db.VarChar(32)
+  remarks           String?         @db.VarChar(255)
+  movement_metadata Json?           @db.Json
+  created_by        String?         @db.VarChar(100)
+  created_at        DateTime?       @default(now()) @db.Timestamptz(6)
+  product_batches   product_batches @relation(fields: [batch_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  products          products        @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  vendor            vendor?         @relation(fields: [vendor_id], references: [id], onUpdate: NoAction)
+
+  @@index([batch_id], map: "ix_inventory_stock_movements_batch_id")
+  @@index([from_entity_id], map: "ix_inventory_stock_movements_from_entity_id")
+  @@index([from_entity_type], map: "ix_inventory_stock_movements_from_entity_type")
+  @@index([id], map: "ix_inventory_stock_movements_id")
+  @@index([product_id], map: "ix_inventory_stock_movements_product_id")
+  @@index([to_entity_id], map: "ix_inventory_stock_movements_to_entity_id")
+  @@index([to_entity_type], map: "ix_inventory_stock_movements_to_entity_type")
+  @@schema("inventory")
+}
+
+model stock_quantities {
+  id                 Int             @id @default(autoincrement())
+  squid              String          @unique(map: "ix_inventory_stock_quantities_squid") @db.VarChar(255)
+  product_id         Int
+  batch_id           Int
+  location_id        Int
+  available_quantity Int?
+  reserved_quantity  Int
+  is_active          Boolean?
+  is_deleted         Boolean?
+  meta               Json?           @db.Json
+  created_at         DateTime?       @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime?       @default(now()) @db.Timestamptz(6)
+  product_batches    product_batches @relation(fields: [batch_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  stock_locations    stock_locations @relation(fields: [location_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  products           products        @relation(fields: [product_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([product_id, batch_id, location_id], map: "uq_product_batch_location")
+  @@index([batch_id], map: "ix_inventory_stock_quantities_batch_id")
+  @@index([id], map: "ix_inventory_stock_quantities_id")
+  @@index([location_id], map: "ix_inventory_stock_quantities_location_id")
+  @@index([product_id], map: "ix_inventory_stock_quantities_product_id")
+  @@schema("inventory")
+}
+
+model taxonomy_terms {
+  id                     Int                      @id @default(autoincrement())
+  tmuid                  String                   @unique(map: "ix_inventory_taxonomy_terms_tmuid") @db.VarChar
+  taxonomy_id            Int
+  parent_id              Int?
+  name                   String                   @db.VarChar(50)
+  slug                   String                   @db.VarChar(50)
+  description            String?                  @db.VarChar(255)
+  is_active              Boolean?
+  created_by             Int
+  is_predefined          Boolean
+  sort_order             Int?
+  created_at             DateTime?                @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime?                @default(now()) @db.Timestamptz(6)
+  product_taxonomy_terms product_taxonomy_terms[]
+  backendusers           backendusers             @relation(fields: [created_by], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  taxonomy_terms         taxonomy_terms?          @relation("taxonomy_termsTotaxonomy_terms", fields: [parent_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  other_taxonomy_terms   taxonomy_terms[]         @relation("taxonomy_termsTotaxonomy_terms")
+  product_taxonomy       product_taxonomy         @relation(fields: [taxonomy_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  taxonomy_terms_coupons taxonomy_terms_coupons[]
+  session_coupons        session_coupons[]
+  session_profiles       session_profiles[]
+  session_taxonomy_terms session_taxonomy_terms[]
+  sessions               sessions[]
+
+  @@unique([taxonomy_id, slug], map: "uq_taxonomy_slug")
+  @@index([id], map: "ix_inventory_taxonomy_terms_id")
+  @@index([name], map: "ix_inventory_taxonomy_terms_name")
+  @@index([parent_id], map: "ix_inventory_taxonomy_terms_parent_id")
+  @@index([taxonomy_id], map: "ix_inventory_taxonomy_terms_taxonomy_id")
+  @@schema("inventory")
+}
+
+model taxonomy_terms_coupons {
+  id             Int            @id @default(autoincrement())
+  coupon_id      Int
+  term_id        Int
+  is_enabled     Boolean
+  created_at     DateTime       @db.Timestamptz(6)
+  updated_at     DateTime       @db.Timestamptz(6)
+  coupons        coupons        @relation(fields: [coupon_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  taxonomy_terms taxonomy_terms @relation(fields: [term_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([coupon_id, term_id], map: "uq_coupon_term")
+  @@index([coupon_id], map: "ix_coupon_id")
+  @@index([id], map: "ix_inventory_taxonomy_terms_coupons_id")
+  @@index([term_id], map: "ix_term_id")
+  @@schema("inventory")
+}
+
+model tenants {
+  id              Int               @id @default(autoincrement())
+  tuid            String            @unique(map: "ix_inventory_tenants_tuid") @db.VarChar(255)
+  meta            Json?             @db.Json
+  is_active       Boolean?
+  created_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  stock_locations stock_locations[]
+
+  @@index([id], map: "ix_inventory_tenants_id")
+  @@schema("inventory")
+}
+
+model vendor {
+  id              Int               @id @default(autoincrement())
+  vuid            String            @unique(map: "ix_inventory_vendor_vuid") @db.VarChar(255)
+  code            String            @unique(map: "ix_inventory_vendor_code") @db.VarChar(50)
+  name            String            @db.VarChar(100)
+  type            String            @db.VarChar(50)
+  contact_name    String?           @db.VarChar(100)
+  email           String?           @db.VarChar(100)
+  phone           String?           @db.VarChar(30)
+  address         String?           @db.VarChar(255)
+  identity_type   String?           @db.VarChar(150)
+  identity_number String?           @db.VarChar(100)
+  tags            Json?             @db.Json
+  meta            Json?             @db.Json
+  is_active       Boolean?
+  is_deleted      Boolean?
+  created_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime?         @default(now()) @db.Timestamptz(6)
+  product_batches product_batches[]
+  stock_movements stock_movements[]
+
+  @@index([id], map: "ix_inventory_vendor_id")
+  @@index([is_deleted], map: "ix_inventory_vendor_is_deleted")
+  @@schema("inventory")
+}
+
+model order_items {
+  id             Int              @id @default(autoincrement())
+  order_id       Int
+  product_id     Int?
+  quantity       Int
+  unit_price     Decimal          @db.Decimal(10, 2)
+  line_total     Decimal          @db.Decimal(10, 2)
+  tax_profile_id Int?
+  tax_amount     Decimal          @db.Decimal(10, 2)
+  product_meta   Json?            @db.Json
+  tax_meta       Json?            @db.Json
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime         @default(now()) @db.Timestamptz(6)
+  orders         orders           @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  products       products?        @relation(fields: [product_id], references: [id], onUpdate: NoAction)
+  tax_profiles   tax_profiles?    @relation(fields: [tax_profile_id], references: [id], onUpdate: NoAction)
+  order_services order_services[]
+
+  @@index([id], map: "ix_sales_order_items_id")
+  @@schema("sales")
+}
+
+model order_services {
+  id             Int           @id @default(autoincrement())
+  order_id       Int
+  order_item_id  Int?
+  service_id     Int?
+  quantity       Int
+  unit_price     Decimal       @db.Decimal(10, 2)
+  line_total     Decimal       @db.Decimal(10, 2)
+  tax_profile_id Int?
+  tax_amount     Decimal       @db.Decimal(10, 2)
+  service_meta   Json?         @db.Json
+  created_at     DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime      @default(now()) @db.Timestamptz(6)
+  orders         orders        @relation(fields: [order_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  order_items    order_items?  @relation(fields: [order_item_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  services       services?     @relation(fields: [service_id], references: [id], onUpdate: NoAction)
+  tax_profiles   tax_profiles? @relation(fields: [tax_profile_id], references: [id], onUpdate: NoAction)
+
+  @@index([id], map: "ix_sales_order_services_id")
+  @@schema("sales")
+}
+
+model orders {
+  id                 Int                 @id @default(autoincrement())
+  ouid               String              @unique(map: "ix_sales_orders_ouid") @db.VarChar(50)
+  user_id            Int?
+  subtotal           Decimal             @db.Decimal(10, 2)
+  tax_total          Decimal             @db.Decimal(10, 2)
+  discount_total     Decimal             @db.Decimal(10, 2)
+  shipping_total     Decimal             @db.Decimal(10, 2)
+  grand_total        Decimal             @db.Decimal(10, 2)
+  currency           String              @db.VarChar(10)
+  status             String?             @db.VarChar(20)
+  client_secret      String?             @db.VarChar(255)
+  order_meta         Json?               @db.Json
+  address_id         Int?
+  address_meta       Json?               @db.Json
+  created_at         DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime            @default(now()) @db.Timestamptz(6)
+  session_id         Int?
+  order_items        order_items[]
+  order_services     order_services[]
+  customer_addresses customer_addresses? @relation(fields: [address_id], references: [id], onUpdate: NoAction)
+  frontendusers      frontendusers?      @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+  transactions       transactions[]
+
+  @@index([address_id], map: "ix_sales_orders_address_id")
+  @@index([id], map: "ix_sales_orders_id")
+  @@index([status], map: "ix_sales_orders_status")
+  @@schema("sales")
+}
+
+model transactions {
+  id               Int      @id @default(autoincrement())
+  trxuid           String   @unique(map: "ix_sales_transactions_trxuid") @db.VarChar(50)
+  order_id         Int?
+  payment_gateway  String   @db.VarChar(50)
+  payment_method   String?  @db.VarChar(50)
+  payment_id       String?  @db.VarChar(100)
+  gateway_response Json?    @db.Json
+  currency         String?  @db.VarChar(10)
+  amount           Decimal  @db.Decimal(10, 2)
+  status           String?  @db.VarChar(20)
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @db.Timestamptz(6)
+  orders           orders?  @relation(fields: [order_id], references: [id], onUpdate: NoAction)
+
+  @@index([id], map: "ix_sales_transactions_id")
+  @@index([order_id], map: "ix_sales_transactions_order_id")
+  @@index([payment_id], map: "ix_sales_transactions_payment_id")
+  @@index([payment_method], map: "ix_sales_transactions_payment_method")
+  @@schema("sales")
+}
+
+model session_coupons {
+  id              Int               @id @default(autoincrement())
+  scuid           String            @unique(map: "ix_session_session_coupons_scuid") @db.VarChar(255)
+  session_id      Int
+  user_id         Int
+  product_id      Int?
+  term_id         Int?
+  order_id        String?           @db.VarChar(255)
+  code            String            @unique(map: "ix_session_session_coupons_code") @db.VarChar(255)
+  status          String            @db.VarChar(20)
+  applied_at      DateTime?         @db.Timestamptz(6)
+  position        Int?
+  is_valid        Boolean
+  is_redeemed     Boolean
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @default(now()) @db.Timestamptz(6)
+  products        products?         @relation(fields: [product_id], references: [id], onUpdate: NoAction)
+  sessions        sessions          @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  taxonomy_terms  taxonomy_terms?   @relation(fields: [term_id], references: [id], onUpdate: NoAction)
+  frontendusers   frontendusers     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  session_rewards session_rewards[]
+
+  @@index([applied_at], map: "ix_session_session_coupons_applied_at")
+  @@index([id], map: "ix_session_session_coupons_id")
+  @@index([session_id], map: "ix_session_session_coupons_session_id")
+  @@index([status], map: "ix_session_session_coupons_status")
+  @@index([user_id], map: "ix_session_session_coupons_user_id")
+  @@schema("session")
+}
+
+model session_participants {
+  id              Int           @id @default(autoincrement())
+  session_id      Int
+  user_id         Int
+  coupons_owned   Int
+  coupons_applied Int
+  is_winner       Boolean
+  joined_at       DateTime      @default(now()) @db.Timestamptz(6)
+  sessions        sessions      @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  frontendusers   frontendusers @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([session_id, user_id], map: "uq_session_user")
+  @@index([id], map: "ix_session_session_participants_id")
+  @@index([is_winner], map: "ix_session_session_participants_is_winner")
+  @@index([session_id], map: "ix_session_session_participants_session_id")
+  @@index([user_id], map: "ix_session_session_participants_user_id")
+  @@schema("session")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model session_profiles {
+  id                     Int                      @id @default(autoincrement())
+  spuid                  String                   @unique(map: "ix_session_session_profiles_spuid") @db.VarChar(255)
+  title                  String                   @db.VarChar(200)
+  description            String?
+  max_slots              Int
+  max_sessions           Int?
+  sessions_count         Int
+  sales_trigger_count    Int?
+  reward_type            String                   @db.VarChar(50)
+  reward_value           Decimal?                 @db.Decimal(10, 2)
+  reward_currency        String?                  @db.VarChar(10)
+  reward_product_id      Int?
+  reward_coupon_id       Int?
+  taxonomy_term_id       Int?
+  reward_metadata        Json?                    @db.Json
+  display_config         Json?                    @db.Json
+  created_by             Int?
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  priority_position      Int                      @default(10)
+  is_active              Boolean                  @default(true)
+  is_deleted             Boolean                  @default(false)
+  session_duration_value Int?
+  session_duration_unit  String?                  @db.VarChar(10)
+  backendusers           backendusers?            @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  coupons                coupons?                 @relation(fields: [reward_coupon_id], references: [id], onUpdate: NoAction)
+  products               products?                @relation(fields: [reward_product_id], references: [id], onUpdate: NoAction)
+  taxonomy_terms         taxonomy_terms?          @relation(fields: [taxonomy_term_id], references: [id], onUpdate: NoAction)
+  session_taxonomy_terms session_taxonomy_terms[]
+  sessions               sessions[]
+
+  @@index([is_active], map: "idx_session_profiles_is_active")
+  @@index([is_deleted], map: "idx_session_profiles_is_deleted")
+  @@index([priority_position], map: "idx_session_profiles_priority_position")
+  @@index([id], map: "ix_session_session_profiles_id")
+  @@index([taxonomy_term_id], map: "ix_session_session_profiles_taxonomy_term_id")
+  @@index([title], map: "ix_session_session_profiles_title")
+  @@schema("session")
+}
+
+model session_rewards {
+  id                Int             @id @default(autoincrement())
+  session_id        Int
+  user_id           Int
+  session_coupon_id Int
+  reward_type       String          @db.VarChar(50)
+  reward_value      Decimal?        @db.Decimal(10, 2)
+  reward_currency   String?         @db.VarChar(10)
+  reward_product_id Int?
+  reward_coupon_id  Int?
+  reward_metadata   Json?           @db.Json
+  status            String          @db.VarChar(20)
+  transaction_id    String?         @db.VarChar(255)
+  credited_at       DateTime?       @db.Timestamptz(6)
+  created_at        DateTime        @default(now()) @db.Timestamptz(6)
+  coupons           coupons?        @relation(fields: [reward_coupon_id], references: [id], onUpdate: NoAction)
+  products          products?       @relation(fields: [reward_product_id], references: [id], onUpdate: NoAction)
+  session_coupons   session_coupons @relation(fields: [session_coupon_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sessions          sessions        @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  frontendusers     frontendusers   @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_session_session_rewards_id")
+  @@index([session_id], map: "ix_session_session_rewards_session_id")
+  @@index([status], map: "ix_session_session_rewards_status")
+  @@index([user_id], map: "ix_session_session_rewards_user_id")
+  @@schema("session")
+}
+
+model session_taxonomy_terms {
+  id                 Int              @id @default(autoincrement())
+  session_profile_id Int
+  term_id            Int
+  is_enabled         Boolean
+  created_at         DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime         @default(now()) @db.Timestamptz(6)
+  session_profiles   session_profiles @relation(fields: [session_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  taxonomy_terms     taxonomy_terms   @relation(fields: [term_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([session_profile_id, term_id], map: "uq_session_profile_term")
+  @@index([id], map: "ix_session_session_taxonomy_terms_id")
+  @@index([session_profile_id], map: "ix_session_session_taxonomy_terms_session_profile_id")
+  @@index([term_id], map: "ix_session_session_taxonomy_terms_term_id")
+  @@schema("session")
+}
+
+model sessions {
+  id                        Int                    @id @default(autoincrement())
+  suid                      String                 @unique(map: "ix_session_sessions_suid") @db.VarChar(255)
+  session_profile_id        Int
+  name                      String?                @db.VarChar(200)
+  start_time                DateTime?              @db.Timestamptz(6)
+  end_time                  DateTime?              @db.Timestamptz(6)
+  status                    String                 @db.VarChar(30)
+  priority_position         Decimal                @db.Decimal(18, 6)
+  is_active                 Boolean
+  is_deleted                Boolean
+  start_trigger_type        String?                @db.VarChar(50)
+  start_trigger_value       Int?
+  stop_trigger_type         String?                @db.VarChar(50)
+  stop_trigger_value        Int?
+  current_sales_count       Int
+  current_participant_count Int
+  auto_close_on_full        Boolean
+  created_at                DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime               @default(now()) @db.Timestamptz(6)
+  taxonomy_term_id          Int?
+  session_coupons           session_coupons[]
+  session_participants      session_participants[]
+  session_rewards           session_rewards[]
+  session_profiles          session_profiles       @relation(fields: [session_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  taxonomy_terms            taxonomy_terms?        @relation(fields: [taxonomy_term_id], references: [id], onUpdate: NoAction)
+
+  @@index([taxonomy_term_id], map: "idx_sessions_taxonomy_term_id")
+  @@index([end_time], map: "ix_session_sessions_end_time")
+  @@index([id], map: "ix_session_sessions_id")
+  @@index([session_profile_id], map: "ix_session_sessions_session_profile_id")
+  @@index([start_time], map: "ix_session_sessions_start_time")
+  @@index([status], map: "ix_session_sessions_status")
+  @@schema("session")
+}
+
+model tax_profiles {
+  id             Int              @id @default(autoincrement())
+  txuid          String           @unique(map: "ix_tax_tax_profiles_txuid") @db.VarChar(50)
+  name           String           @db.VarChar(100)
+  description    String?          @db.VarChar(255)
+  created_by     Int
+  is_active      Boolean?
+  is_deleted     Boolean
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime         @default(now()) @db.Timestamptz(6)
+  products       products[]
+  services       services[]
+  order_items    order_items[]
+  order_services order_services[]
+  backendusers   backendusers     @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tax_rates      tax_rates[]
+
+  @@index([id], map: "ix_tax_tax_profiles_id")
+  @@index([is_deleted], map: "ix_tax_tax_profiles_is_deleted")
+  @@schema("tax")
+}
+
+model tax_rate_locations {
+  id            Int       @id @default(autoincrement())
+  luid          String    @unique(map: "ix_tax_tax_rate_locations_luid") @db.VarChar(50)
+  tax_rate_id   Int
+  location_type String    @db.VarChar(20)
+  location_code String    @db.VarChar(50)
+  is_deleted    Boolean
+  tax_rates     tax_rates @relation(fields: [tax_rate_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_tax_tax_rate_locations_id")
+  @@index([is_deleted], map: "ix_tax_tax_rate_locations_is_deleted")
+  @@index([location_code], map: "ix_tax_tax_rate_locations_location_code")
+  @@index([tax_rate_id], map: "ix_tax_tax_rate_locations_tax_rate_id")
+  @@schema("tax")
+}
+
+model tax_rates {
+  id                 Int                  @id @default(autoincrement())
+  truid              String               @unique(map: "ix_tax_tax_rates_truid") @db.VarChar(50)
+  rate               Float
+  calculation_type   String               @db.VarChar(20)
+  name               String               @db.VarChar(100)
+  priority           Int
+  is_deleted         Boolean
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
+  tax_profile_id     Int
+  tax_rate_locations tax_rate_locations[]
+  tax_profiles       tax_profiles         @relation(fields: [tax_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([id], map: "ix_tax_tax_rates_id")
+  @@index([is_deleted], map: "ix_tax_tax_rates_is_deleted")
+  @@index([name], map: "ix_tax_tax_rates_name")
+  @@index([tax_profile_id], map: "ix_tax_tax_rates_tax_profile_id")
+  @@schema("tax")
+}

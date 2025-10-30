@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jio20-session
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: jio20-session
+  template:
+    metadata:
+      labels:
+        app: jio20-session
+    spec:
+      containers:
+        - name: app
+          image: your-registry/jio20-session:latest
+          ports:
+            - containerPort: 9000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "9000"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: REDIS_URL
+            - name: REDIS_BULLMQ_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: REDIS_BULLMQ_URL
+
+
