@@ -1,11 +1,17 @@
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
+import {
+  FastifyAdapter,
+  NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 import { AppModule } from './app/app.module';
+import { registerWsDocsUi } from './common/templates/ws-docs-ui';
 import fastifyHelmet from '@fastify/helmet';
 import fastifyCors from '@fastify/cors';
 import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { RedisIoAdapter } from './app/socket/redis-io.adapter';
+import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { AsyncApiDocumentBuilder, AsyncApiModule } from 'nestjs-asyncapi';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -17,18 +23,66 @@ async function bootstrap() {
   const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
   const redisIoAdapter = new RedisIoAdapter(app, redisUrl);
   await redisIoAdapter.connectToRedis();
-  app.useWebSocketAdapter(redisIoAdapter as any);
-  app.use(new RateLimitMiddleware().use as any);
+  app.useWebSocketAdapter(redisIoAdapter);
+  const rateLimit = new RateLimitMiddleware();
+  app.use(rateLimit.use.bind(rateLimit));
+
+  // Swagger/OpenAPI for REST endpoints
+  const config = new DocumentBuilder()
+    .setTitle('Jio20 Session Service')
+    .setDescription('REST API documentation')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  // Serve Swagger UI and JSON via Nest's SwaggerModule only (avoids route duplication)
+  SwaggerModule.setup('docs', app, document, { jsonDocumentUrl: 'docs/json' });
+
   const port = parseInt(process.env.PORT ?? '', 10) || 9000;
+
+  // AsyncAPI for WebSocket documentation
+  // Compute WebSocket URL - will be updated after app.listen() if needed
+  const isHttps =
+    process.env.NODE_ENV === 'production' || process.env.HTTPS === 'true';
+  const wsProtocol = isHttps ? 'wss' : 'ws';
+  const host = process.env.HOST || 'localhost';
+  const wsUrl = `${wsProtocol}://${host}:${port}/ws`;
+
+  const asyncApiOptions = new AsyncApiDocumentBuilder()
+    .setTitle('Jio20 Session WebSocket API')
+    .setDescription('Socket.IO based realtime API')
+    .setVersion('1.0.0')
+    .setDefaultContentType('application/json')
+    .addSecurity('bearerAuth', {
+      type: 'http',
+      scheme: 'bearer',
+      bearerFormat: 'JWT',
+    })
+    .addServer('default', {
+      url: wsUrl,
+      protocol: 'socket.io',
+      description: 'Primary WebSocket server',
+    })
+    .build();
+
+  const asyncapiDocument = AsyncApiModule.createDocument(app, asyncApiOptions);
+  await AsyncApiModule.setup('/ws-docs', app, asyncapiDocument);
+
+  // Minimal interactive Socket.IO test UI at /ws-docs/ui (extracted)
+  registerWsDocsUi(app);
   await app.listen(port, '0.0.0.0');
   const url = await app.getUrl();
   Logger.log(`Application is running at ${url}`, 'Bootstrap');
-  const fastify = app.getHttpAdapter().getInstance();
   try {
+    const fastify = app.getHttpAdapter().getInstance();
     const routesTree = fastify.printRoutes();
     Logger.log(`Available routes on ${url}:\n${routesTree}`, 'Routes');
-  } catch (e) {
-    Logger.warn('Could not print routes (fastify.printRoutes unavailable).', 'Routes');
+  } catch {
+    Logger.warn(
+      'Could not print routes (fastify.printRoutes unavailable).',
+      'Routes',
+    );
   }
 }
-bootstrap();
+void bootstrap();

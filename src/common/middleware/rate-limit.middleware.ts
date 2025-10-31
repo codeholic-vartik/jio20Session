@@ -37,6 +37,16 @@ export class RateLimitMiddleware implements NestMiddleware {
   }
 
   async use(req: any, res: any, next: NextFunction) {
+    const url = (req.originalUrl || req.url || '') as string;
+    if (
+      url.startsWith('/docs') ||
+      url === '/docs' ||
+      url.startsWith('/swagger') ||
+      url.startsWith('/ws-docs')
+    ) {
+      next();
+      return;
+    }
     const fwdHeader = (req.headers && req.headers['x-forwarded-for']) as string | string[] | undefined;
     const fwd = Array.isArray(fwdHeader) ? fwdHeader.join(',') : (fwdHeader || '');
     const fwdFirst = fwd.split(',')[0]?.trim() || '';
