@@ -15,8 +15,10 @@ const THRESHOLD_REACHED_CHANNEL = 'session:sales:threshold_reached';
  * Payload structure for threshold reached events from Redis pub/sub
  */
 interface ThresholdReachedPayload {
-  session_profile_id: string;
-  session_id: string;
+  session_id: number | string;
+  count: number;
+  session_profile_id: number | string;
+  created_at?: string;
 }
 
 /**
@@ -263,13 +265,29 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       const payload = parsed as ThresholdReachedPayload;
-      const sessionId = payload.session_id;
-      const sessionProfileId = payload.session_profile_id;
-      if (!sessionId || !sessionProfileId) {
+
+      // Extract numeric IDs - handle both number and string formats
+      const sessionId =
+        typeof payload.session_id === 'number'
+          ? payload.session_id
+          : this.parseNumericId(String(payload.session_id), 'sess_');
+      const sessionProfileId =
+        typeof payload.session_profile_id === 'number'
+          ? payload.session_profile_id
+          : this.parseNumericId(String(payload.session_profile_id), 'prod_');
+
+      if (sessionId === null || sessionProfileId === null) {
         this.logger.warn(
-          `Invalid payload format: session_profile_id=${sessionProfileId}, session_id=${sessionId}`,
+          `Failed to parse IDs from payload: session_id=${payload.session_id}, session_profile_id=${payload.session_profile_id}`,
         );
         return;
+      }
+
+      // Log count if present (for monitoring/debugging)
+      if (payload.count !== undefined) {
+        this.logger.debug(
+          `Threshold reached with count: ${payload.count} for session ${sessionId}`,
+        );
       }
 
       this.logger.log(
@@ -277,10 +295,7 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       );
 
       // Create session when threshold is reached
-      await this.createSessionOnThreshold(
-        Number(sessionId),
-        Number(sessionProfileId),
-      );
+      await this.createSessionOnThreshold(sessionId, sessionProfileId);
 
       //   // Add job to the session queue
       //   await this.sessionQueue.add(
@@ -313,18 +328,33 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Extracts numeric ID from a prefixed string (e.g., "prod_123" -> 123).
+   * Parses numeric ID from a string, handling both prefixed and plain formats.
+   * Examples: "prod_123" -> 123, "123" -> 123, "sess_456" -> 456, "456" -> 456
    *
-   * @param prefixedId - The prefixed ID string (e.g., "prod_123", "sess_456")
-   * @param prefix - The prefix to remove (e.g., "prod_", "sess_")
+   * @param idStr - The ID string (may have prefix like "prod_123" or plain "123")
+   * @param prefix - Optional prefix to remove if present (e.g., "prod_", "sess_")
    * @returns The numeric ID, or null if invalid format
    */
-  private extractId(prefixedId: string, prefix: string): number | null {
-    if (!prefixedId || !prefixedId.startsWith(prefix)) {
+  private parseNumericId(idStr: string, prefix?: string): number | null {
+    if (!idStr || typeof idStr !== 'string') {
       return null;
     }
-    const idStr = prefixedId.slice(prefix.length);
-    const id = parseInt(idStr, 10);
-    return isNaN(id) ? null : id;
+
+    // Try to parse as plain number first
+    const plainNumber = parseInt(idStr, 10);
+    if (!isNaN(plainNumber)) {
+      return plainNumber;
+    }
+
+    // If plain number parsing failed and prefix provided, try removing prefix
+    if (prefix && idStr.startsWith(prefix)) {
+      const idWithoutPrefix = idStr.slice(prefix.length);
+      const prefixedNumber = parseInt(idWithoutPrefix, 10);
+      if (!isNaN(prefixedNumber)) {
+        return prefixedNumber;
+      }
+    }
+
+    return null;
   }
 }

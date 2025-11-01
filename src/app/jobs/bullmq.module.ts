@@ -1,6 +1,15 @@
-import { Global, Inject, Module, OnModuleDestroy } from '@nestjs/common';
+import {
+  Global,
+  Inject,
+  Module,
+  OnModuleDestroy,
+  OnModuleInit,
+  Logger,
+} from '@nestjs/common';
 import { Queue } from 'bullmq';
 import IORedis, { RedisOptions } from 'ioredis';
+// Import worker to ensure it starts processing jobs
+import './workers/session.worker';
 
 /**
  * Helper function to determine if TLS should be used
@@ -122,10 +131,76 @@ async function checkEvictionPolicy(client: IORedis): Promise<void> {
   ],
   exports: ['BULLMQ_CONNECTION', 'SESSION_QUEUE'],
 })
-export class BullmqModule implements OnModuleDestroy {
+export class BullmqModule implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(BullmqModule.name);
+
   constructor(
     @Inject('BULLMQ_CONNECTION') private readonly connection: IORedis,
+    @Inject('SESSION_QUEUE') private readonly sessionQueue: Queue,
   ) {}
+
+  /**
+   * Initialize recurring jobs when module starts
+   */
+  async onModuleInit(): Promise<void> {
+    // Schedule sales count sync job to run every 5 minutes
+    // This syncs Redis sales count to database for all active sessions
+    const syncIntervalMinutes = parseInt(
+      process.env.SALES_SYNC_INTERVAL_MINUTES || '5',
+      10,
+    );
+
+    if (syncIntervalMinutes < 1) {
+      this.logger.warn(
+        'SALES_SYNC_INTERVAL_MINUTES must be >= 1, defaulting to 5 minutes',
+      );
+    }
+
+    const intervalMs = Math.max(syncIntervalMinutes, 1) * 60 * 1000;
+
+    try {
+      // Remove any existing recurring job with the same name to avoid duplicates
+      const repeatableJobs = await this.sessionQueue.getRepeatableJobs();
+      const existingSyncJob = repeatableJobs.find(
+        (job) => job.name === 'sync-sales',
+      );
+
+      if (existingSyncJob) {
+        await this.sessionQueue.removeRepeatableByKey(existingSyncJob.key);
+        this.logger.log('Removed existing sync-sales recurring job');
+      }
+
+      // Add new recurring job
+      await this.sessionQueue.add(
+        'sync-sales',
+        {},
+        {
+          repeat: {
+            every: intervalMs,
+          },
+          removeOnComplete: {
+            age: 3600, // Keep completed jobs for 1 hour
+            count: 10, // Keep last 10 completed jobs
+          },
+          removeOnFail: {
+            age: 86400, // Keep failed jobs for 24 hours
+          },
+        },
+      );
+
+      this.logger.log(
+        `Scheduled sales count sync job to run every ${syncIntervalMinutes} minute(s)`,
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to schedule sales sync job: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      // Don't throw - allow module to continue even if scheduling fails
+    }
+  }
 
   async onModuleDestroy(): Promise<void> {
     await this.connection.quit();

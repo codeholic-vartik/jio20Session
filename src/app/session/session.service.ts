@@ -62,8 +62,8 @@ export class SessionService {
       `Creating session for session_id=${sessionId}, session_profile_id=${sessionProfileId}`,
     );
 
-    // Fetch session profile - use findUnique for better performance with primary key
-    const sessionProfile = await this.prisma.session_profiles.findUnique({
+    // Fetch session profile - must be active and not deleted
+    const sessionProfile = await this.prisma.session_profiles.findFirst({
       where: {
         id: sessionProfileId,
         is_active: true,
@@ -72,13 +72,8 @@ export class SessionService {
     });
 
     if (!sessionProfile) {
-      throw new Error(`Session profile not found: ${sessionProfileId}`);
-    }
-
-    // Validate session profile is active and not deleted
-    if (!sessionProfile.is_active || sessionProfile.is_deleted) {
       throw new Error(
-        `Session profile is inactive or deleted: ${sessionProfileId}`,
+        `Session profile not found, inactive, or deleted: ${sessionProfileId}`,
       );
     }
 
