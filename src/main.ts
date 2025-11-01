@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -13,7 +14,22 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AsyncApiDocumentBuilder, AsyncApiModule } from 'nestjs-asyncapi';
 import { createStandaloneLogger } from './common/logger/logger.util';
 
-const logger = createStandaloneLogger('Bootstrap');
+const isDevelopment = process.env.NODE_ENV !== 'production';
+// Use NestJS built-in Logger for development, Winston for production
+const nestLogger = new Logger('Bootstrap');
+const standaloneLogger = createStandaloneLogger('Bootstrap');
+
+// Unified logger interface
+const logger = isDevelopment
+  ? {
+      log: (message: string) => nestLogger.log(message),
+      error: (message: string, trace?: string) =>
+        nestLogger.error(message, trace),
+      warn: (message: string) => nestLogger.warn(message),
+      debug: (message: string) => nestLogger.debug(message),
+      info: (message: string) => nestLogger.log(message), // NestJS Logger uses log for info
+    }
+  : standaloneLogger;
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(

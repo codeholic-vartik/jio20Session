@@ -342,13 +342,8 @@ export const sessionWorker = new Worker(
           error instanceof Error ? error.message : 'Unknown error';
 
         logger.error(
-          {
-            sessionId,
-            sessionProfileId,
-            error: errorMessage,
-            stack: error instanceof Error ? error.stack : undefined,
-          },
-          `Failed to create session`,
+          `Failed to create session - session_id=${sessionId}, session_profile_id=${sessionProfileId}, error=${errorMessage}`,
+          error instanceof Error ? error.stack : undefined,
         );
 
         // Update Redis with error info but keep isCreated: false
@@ -526,12 +521,8 @@ export const sessionWorker = new Worker(
                 error instanceof Error ? error.message : String(error);
 
               logger.error(
-                {
-                  sessionId,
-                  error: errorMessage,
-                  stack: error instanceof Error ? error.stack : undefined,
-                },
-                `Failed to update session`,
+                `Failed to update session ${sessionId}: ${errorMessage}`,
+                error instanceof Error ? error.stack : undefined,
               );
             }
           });
@@ -558,11 +549,8 @@ export const sessionWorker = new Worker(
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
         logger.error(
-          {
-            error: errorMessage,
-            stack: error instanceof Error ? error.stack : undefined,
-          },
-          'Sales count sync failed',
+          `Sales count sync failed: ${errorMessage}`,
+          error instanceof Error ? error.stack : undefined,
         );
         throw error;
       }

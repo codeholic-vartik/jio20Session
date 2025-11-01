@@ -1,136 +1,137 @@
-import { Injectable, LoggerService as NestLoggerService } from '@nestjs/common';
+import {
+  Injectable,
+  LoggerService as NestLoggerService,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import pino from 'pino';
+import * as winston from 'winston';
+import DailyRotateFile from 'winston-daily-rotate-file';
 import * as fs from 'fs';
-import rfs from 'rotating-file-stream';
+import * as path from 'path';
 
 @Injectable()
 export class LoggerService implements NestLoggerService {
-  private readonly logger: pino.Logger;
+  private readonly logger: NestLoggerService;
+  private readonly isDevelopment: boolean;
 
   constructor(private readonly configService: ConfigService) {
-    const logLevel =
-      (this.configService.get<string>('LOG_LEVEL') as
-        | 'fatal'
-        | 'error'
-        | 'warn'
-        | 'info'
-        | 'debug'
-        | 'trace') || 'info';
-
-    const isDevelopment =
+    this.isDevelopment =
       this.configService.get<string>('NODE_ENV') !== 'production';
 
-    const logDir = this.configService.get<string>('LOG_DIR') || 'logs';
-    const retentionDays = parseInt(
-      this.configService.get<string>('LOG_RETENTION_DAYS') || '30',
-      10,
-    );
+    if (this.isDevelopment) {
+      // Use NestJS built-in Logger for development
+      this.logger = new Logger();
+    } else {
+      // Use Winston for production with file rotation
+      const logDir = this.configService.get<string>('LOG_DIR') || 'logs';
+      const retentionDays = parseInt(
+        this.configService.get<string>('LOG_RETENTION_DAYS') || '30',
+        10,
+      );
 
-    // Ensure log directory exists
-    if (!isDevelopment) {
+      // Ensure log directory exists
       if (!fs.existsSync(logDir)) {
         fs.mkdirSync(logDir, { recursive: true });
       }
-    }
 
-    // Configure transport for pretty printing in development
-    let transport:
-      | pino.TransportMultiOptions
-      | pino.TransportSingleOptions
-      | undefined;
-    if (isDevelopment) {
-      try {
-        // Try to use pino-pretty if available
-        require.resolve('pino-pretty');
-        transport = {
-          target: 'pino-pretty',
-          options: {
-            colorize: true,
-            translateTime: 'HH:MM:ss',
-            ignore: 'pid,hostname',
-          },
-        };
-      } catch {
-        // pino-pretty not installed, use basic formatting
-        transport = undefined;
-      }
-    } else {
-      // Production: Use file rotation with rotating-file-stream
-      // Create rotating streams for app logs and error logs
-      const appLogStream = rfs.createStream('app-%Y-%m-%d.log', {
-        path: logDir,
-        size: '10M', // Rotate when file reaches 10MB
-        interval: '1d', // Rotate daily
-        maxFiles: retentionDays, // Keep logs for specified days
-        compress: 'gzip', // Compress old logs
-      });
+      const logLevel =
+        (this.configService.get<string>('LOG_LEVEL') as
+          | 'error'
+          | 'warn'
+          | 'info'
+          | 'debug'
+          | 'verbose') || 'info';
 
-      const errorLogStream = rfs.createStream('error-%Y-%m-%d.log', {
-        path: logDir,
-        size: '10M',
-        interval: '1d',
-        maxFiles: retentionDays,
-        compress: 'gzip',
-      });
-
-      // Use multi-stream transport to write to both files
-      transport = {
-        targets: [
-          {
-            target: 'pino/file',
-            level: 'info',
-            options: { destination: appLogStream },
-          },
-          {
-            target: 'pino/file',
+      // Create Winston logger with daily rotate file transport
+      const winstonLogger = winston.createLogger({
+        level: logLevel,
+        format: winston.format.combine(
+          winston.format.timestamp(),
+          winston.format.errors({ stack: true }),
+          winston.format.json(),
+        ),
+        defaultMeta: { service: 'jio20-session' },
+        transports: [
+          // Console transport for all logs
+          new winston.transports.Console({
+            format: winston.format.combine(
+              winston.format.colorize(),
+              winston.format.simple(),
+            ),
+          }),
+          // Daily rotate file for all logs
+          new DailyRotateFile({
+            filename: path.join(logDir, 'app-%DATE%.log'),
+            datePattern: 'YYYY-MM-DD',
+            maxSize: '10m',
+            maxFiles: `${retentionDays}d`,
+            zippedArchive: true,
+            format: winston.format.combine(
+              winston.format.timestamp(),
+              winston.format.json(),
+            ),
+          }),
+          // Separate file for errors
+          new DailyRotateFile({
+            filename: path.join(logDir, 'error-%DATE%.log'),
+            datePattern: 'YYYY-MM-DD',
             level: 'error',
-            options: { destination: errorLogStream },
-          },
+            maxSize: '10m',
+            maxFiles: `${retentionDays}d`,
+            zippedArchive: true,
+            format: winston.format.combine(
+              winston.format.timestamp(),
+              winston.format.json(),
+            ),
+          }),
         ],
+      });
+
+      // Create adapter to match NestJS LoggerService interface
+      this.logger = {
+        log: (message: string, context?: string) => {
+          winstonLogger.info(message, { context });
+        },
+        error: (message: string, trace?: string, context?: string) => {
+          winstonLogger.error(message, { trace, context });
+        },
+        warn: (message: string, context?: string) => {
+          winstonLogger.warn(message, { context });
+        },
+        debug: (message: string, context?: string) => {
+          winstonLogger.debug(message, { context });
+        },
+        verbose: (message: string, context?: string) => {
+          winstonLogger.verbose(message, { context });
+        },
+        fatal: (message: string, context?: string) => {
+          winstonLogger.error(message, { context, level: 'fatal' });
+        },
       };
     }
-
-    this.logger = pino({
-      level: logLevel,
-      transport,
-      formatters: {
-        level: (label) => {
-          return { level: label.toUpperCase() };
-        },
-      },
-      base: isDevelopment ? undefined : { pid: process.pid },
-    });
   }
 
   log(message: string, context?: string): void {
-    this.logger.info({ context }, message);
+    this.logger.log(message, context);
   }
 
   error(message: string, trace?: string, context?: string): void {
-    this.logger.error({ context, trace }, message);
+    this.logger.error(message, trace, context);
   }
 
   warn(message: string, context?: string): void {
-    this.logger.warn({ context }, message);
+    this.logger.warn(message, context);
   }
 
   debug(message: string, context?: string): void {
-    this.logger.debug({ context }, message);
+    this.logger.debug(message, context);
   }
 
   verbose(message: string, context?: string): void {
-    this.logger.trace({ context }, message);
+    this.logger.verbose(message, context);
   }
 
   fatal(message: string, context?: string): void {
-    this.logger.fatal({ context }, message);
-  }
-
-  /**
-   * Get the underlying Pino logger instance for advanced usage
-   */
-  getPinoLogger(): pino.Logger {
-    return this.logger;
+    this.logger.fatal(message, context);
   }
 }
