@@ -65,13 +65,6 @@ const connection = createRedisConnection();
 const getSessionCreationKey = (sessionProfileId: number, sessionId: number) =>
   `session:creation:pending:${sessionProfileId}:${sessionId}`;
 
-// Get Redis sales key TTL from environment (default: 30 days in seconds)
-const getSalesKeyTTL = (): number => {
-  const ttlDays = parseInt(process.env.REDIS_SALES_KEY_TTL_DAYS || '30', 10);
-  // Convert days to seconds (30 days = 30 * 24 * 60 * 60 = 2592000 seconds)
-  return ttlDays * 24 * 60 * 60;
-};
-
 // Prisma client for database operations
 const prisma = new PrismaClient();
 
@@ -175,6 +168,9 @@ async function createSession(
   const sessionNumber = sessionProfile.sessions_count + 1;
   const sessionName = generateSessionName(sessionProfile.title, sessionNumber);
 
+  // Set initial sales count to sales_trigger_count (or 0 if not set)
+  const initialSalesCount = sessionProfile.sales_trigger_count || 0;
+
   const newSession = await prisma.sessions.create({
     data: {
       suid,
@@ -186,14 +182,14 @@ async function createSession(
       priority_position: sessionProfile.priority_position,
       is_active: true,
       is_deleted: false,
-      current_sales_count: 0,
+      current_sales_count: initialSalesCount,
       current_participant_count: 0,
       auto_close_on_full: true,
     },
   });
 
   // Update session profile sessions_count
-  await prisma.session_profiles.update({
+  const updatedProfile = await prisma.session_profiles.update({
     where: { id: sessionProfileId },
     data: {
       sessions_count: {
@@ -201,6 +197,52 @@ async function createSession(
       },
     },
   });
+
+  // Check if max_sessions limit reached and disable sales
+  if (
+    updatedProfile.max_sessions !== null &&
+    updatedProfile.sessions_count >= updatedProfile.max_sessions
+  ) {
+    console.log(
+      `WORKER: Max sessions limit reached for profile ${sessionProfileId}. Disabling sales for related taxonomy terms.`,
+    );
+
+    // Get all taxonomy terms related to this profile
+    const sessionTaxonomyTerms = await prisma.session_taxonomy_terms.findMany({
+      where: {
+        session_profile_id: sessionProfileId,
+        is_enabled: true,
+      },
+      select: {
+        term_id: true,
+      },
+    });
+
+    if (sessionTaxonomyTerms.length > 0) {
+      // Disable in database
+      await prisma.session_taxonomy_terms.updateMany({
+        where: {
+          session_profile_id: sessionProfileId,
+          is_enabled: true,
+        },
+        data: {
+          is_enabled: false,
+        },
+      });
+
+      // Set Redis flags for fast checks
+      const redisPromises = sessionTaxonomyTerms.map((term) => {
+        const redisKey = `taxonomy:${term.term_id}:sales_disabled`;
+        return connection.setex(redisKey, 2592000, '1'); // 30 days TTL
+      });
+
+      await Promise.all(redisPromises);
+
+      console.log(
+        `WORKER: Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}`,
+      );
+    }
+  }
 
   return {
     success: true,
@@ -398,49 +440,80 @@ export const sessionWorker = new Worker(
           `WORKER: Processing ${sessionDataMap.size} sessions for sync`,
         );
 
-        // Update database for sessions found in Redis
+        // Fetch ONLY sessions that exist in Redis (optimized bulk query)
         const sessionIds = Array.from(sessionDataMap.keys());
+
+        // Fetch sessions from DB (only those with Redis keys)
+        const sessions = await prisma.sessions.findMany({
+          where: {
+            id: { in: sessionIds }, // Only IDs from Redis
+          },
+          select: {
+            id: true,
+            current_sales_count: true,
+          },
+        });
+
+        // Create in-memory map for O(1) lookups
+        const sessionMap = new Map<number, (typeof sessions)[0]>();
+        sessions.forEach((session) => {
+          sessionMap.set(session.id, session);
+        });
+
+        // Update database for sessions found in Redis
         for (let i = 0; i < sessionIds.length; i += batchSize) {
           const batchIds = sessionIds.slice(i, i + batchSize);
 
-          // Update each session in the batch
           const updatePromises = batchIds.map(async (sessionId) => {
             const redisCount = sessionDataMap.get(sessionId) || 0;
             const redisKey = `session:sales:${sessionId}`;
 
             try {
-              // Get current sales count from database
-              const session = await prisma.sessions.findUnique({
-                where: { id: sessionId },
-                select: { current_sales_count: true },
-              });
-
-              if (!session) {
-                // Session doesn't exist in DB, set expiration on Redis key
-                const ttl = getSalesKeyTTL();
-                await connection.expire(redisKey, ttl);
+              // Check if Redis key still exists (might be deleted during session creation)
+              const keyExists = await connection.exists(redisKey);
+              if (!keyExists) {
                 console.log(
-                  `WORKER: Session ${sessionId} not found in DB, set ${ttl / 86400}-day TTL on Redis key`,
+                  `WORKER: Redis key ${redisKey} already deleted, skipping`,
                 );
                 return;
               }
 
-              // Add Redis count to current DB count
+              const session = sessionMap.get(sessionId);
+
+              if (!session) {
+                // Session doesn't exist in DB, remove Redis key
+                await connection.del(redisKey);
+                console.log(
+                  `WORKER: Session ${sessionId} not found in DB, removed Redis key`,
+                );
+                return;
+              }
+
               const currentDbCount = session.current_sales_count || 0;
+
+              // Skip if no sales to sync (already synced)
+              if (redisCount === 0) {
+                await connection.del(redisKey);
+                console.log(
+                  `WORKER: Session ${sessionId} already synced (redisCount=0), removed Redis key`,
+                );
+                return;
+              }
+
+              // Simple: Add Redis count to DB count
               const newCount = currentDbCount + redisCount;
 
-              // Update database with the incremented count
+              // Update database
               await prisma.sessions.update({
                 where: { id: sessionId },
                 data: { current_sales_count: newCount },
               });
 
-              // Set expiration time from environment (default: 30 days)
-              const ttl = getSalesKeyTTL();
-              await connection.expire(redisKey, ttl);
+              // Remove Redis key after successful update
+              await connection.del(redisKey);
               updated++;
               console.log(
-                `WORKER: Updated session ${sessionId}: ${currentDbCount} + ${redisCount} = ${newCount}, set ${ttl / 86400}-day TTL on Redis key`,
+                `WORKER: Updated session ${sessionId}: ${currentDbCount} + ${redisCount} = ${newCount}`,
               );
             } catch (error) {
               errors++;

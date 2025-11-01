@@ -1,14 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject } from '@nestjs/common';
 import { DatabaseService } from '../../common/database/database.service';
 import { generateUid } from '../../common/utils/uuid.util';
 import { generateSessionName } from '../../common/utils/session.util';
 import { SessionStatus } from '../../common/types/enums';
+import IORedis from 'ioredis';
 
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger(SessionService.name);
 
-  constructor(private readonly prisma: DatabaseService) {}
+  constructor(
+    private readonly prisma: DatabaseService,
+    @Inject('BULLMQ_CONNECTION') private readonly redis: IORedis,
+  ) {}
 
   async getActiveSessions() {
     return this.prisma.sessions.findMany({
@@ -153,7 +157,7 @@ export class SessionService {
     });
 
     // Update session profile sessions_count
-    await this.prisma.session_profiles.update({
+    const updatedProfile = await this.prisma.session_profiles.update({
       where: { id: sessionProfileId },
       data: {
         sessions_count: {
@@ -161,6 +165,17 @@ export class SessionService {
         },
       },
     });
+
+    // Check if max_sessions limit reached and disable sales
+    if (
+      updatedProfile.max_sessions !== null &&
+      updatedProfile.sessions_count >= updatedProfile.max_sessions
+    ) {
+      this.logger.warn(
+        `Max sessions limit reached for profile ${sessionProfileId}. Disabling sales for related taxonomy terms.`,
+      );
+      await this.disableSalesForProfile(sessionProfileId);
+    }
 
     this.logger.log(
       `Session created successfully: new_session_id=${newSession.id}, suid=${suid}`,
@@ -171,5 +186,101 @@ export class SessionService {
       message: `Session created successfully for profile ${sessionProfileId}`,
       newSessionId: newSession.id,
     };
+  }
+
+  /**
+   * Disables sales for all taxonomy terms related to a session profile.
+   * Sets is_enabled = false in session_taxonomy_terms and Redis flags.
+   *
+   * @param sessionProfileId - The session profile ID
+   */
+  async disableSalesForProfile(sessionProfileId: number): Promise<void> {
+    try {
+      // Get all taxonomy terms related to this profile
+      const sessionTaxonomyTerms =
+        await this.prisma.session_taxonomy_terms.findMany({
+          where: {
+            session_profile_id: sessionProfileId,
+            is_enabled: true, // Only disable currently enabled ones
+          },
+          select: {
+            term_id: true,
+          },
+        });
+
+      if (sessionTaxonomyTerms.length === 0) {
+        this.logger.log(
+          `No enabled taxonomy terms found for profile ${sessionProfileId}`,
+        );
+        return;
+      }
+
+      // Disable in database
+      await this.prisma.session_taxonomy_terms.updateMany({
+        where: {
+          session_profile_id: sessionProfileId,
+          is_enabled: true,
+        },
+        data: {
+          is_enabled: false,
+        },
+      });
+
+      // Set Redis flags for fast checks (FastAPI can check these)
+      const redisPromises = sessionTaxonomyTerms.map((term) => {
+        const redisKey = `taxonomy:${term.term_id}:sales_disabled`;
+        return this.redis.setex(redisKey, 2592000, '1'); // 30 days TTL
+      });
+
+      await Promise.all(redisPromises);
+
+      this.logger.log(
+        `Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}`,
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to disable sales for profile ${sessionProfileId}: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      // Don't throw - allow session creation to succeed even if disable fails
+    }
+  }
+
+  /**
+   * Checks if sales are enabled for a taxonomy term.
+   * Checks Redis first (fast), then falls back to database.
+   *
+   * @param termId - The taxonomy term ID
+   * @returns true if sales are enabled, false otherwise
+   */
+  async isSalesEnabled(termId: number): Promise<boolean> {
+    try {
+      // Check Redis first (fast path)
+      const redisKey = `taxonomy:${termId}:sales_disabled`;
+      const redisValue = await this.redis.get(redisKey);
+      if (redisValue === '1') {
+        return false; // Sales disabled
+      }
+
+      // Fallback to database check
+      const sessionTerm = await this.prisma.session_taxonomy_terms.findFirst({
+        where: {
+          term_id: termId,
+          is_enabled: true,
+        },
+      });
+
+      return sessionTerm !== null;
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to check sales status for term ${termId}: ${errorMessage}`,
+      );
+      // On error, default to enabled (fail open)
+      return true;
+    }
   }
 }
