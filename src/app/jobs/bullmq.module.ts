@@ -82,9 +82,10 @@ async function checkEvictionPolicy(client: IORedis): Promise<void> {
       }
     } else if (currentPolicy && currentPolicy !== 'noeviction') {
       // Only warn, don't enforce
+      // Note: This function runs before logger is available, so we use console.warn
+
       console.warn(
-        'IMPORTANT! Eviction policy is %s. It should be "noeviction"',
-        currentPolicy,
+        `IMPORTANT! Eviction policy is ${currentPolicy}. It should be "noeviction"`,
       );
     }
   } catch {

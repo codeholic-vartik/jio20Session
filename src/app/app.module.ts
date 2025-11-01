@@ -10,10 +10,12 @@ import { HealthModule } from '../common/health/health.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { ObservabilityModule } from '../common/observability/observability.module';
 import { SessionModule } from './session/session.module';
+import { LoggerModule } from '../common/logger/logger.module';
 
 @Module({
   imports: [
     ConfigModule,
+    LoggerModule,
     DatabaseModule,
     BullmqModule,
     RedisSubscriberModule,

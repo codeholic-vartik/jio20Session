@@ -1,4 +1,3 @@
-import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -12,6 +11,9 @@ import { RateLimitMiddleware } from './common/middleware/rate-limit.middleware';
 import { RedisIoAdapter } from './app/socket/redis-io.adapter';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AsyncApiDocumentBuilder, AsyncApiModule } from 'nestjs-asyncapi';
+import { createStandaloneLogger } from './common/logger/logger.util';
+
+const logger = createStandaloneLogger('Bootstrap');
 
 async function bootstrap() {
   const app = await NestFactory.create<NestFastifyApplication>(
@@ -73,16 +75,13 @@ async function bootstrap() {
   registerWsDocsUi(app);
   await app.listen(port, '0.0.0.0');
   const url = await app.getUrl();
-  Logger.log(`Application is running at ${url}`, 'Bootstrap');
+  logger.info(`Application is running at ${url}`);
   try {
     const fastify = app.getHttpAdapter().getInstance();
     const routesTree = fastify.printRoutes();
-    Logger.log(`Available routes on ${url}:\n${routesTree}`, 'Routes');
+    logger.info(`Available routes on ${url}:\n${routesTree}`);
   } catch {
-    Logger.warn(
-      'Could not print routes (fastify.printRoutes unavailable).',
-      'Routes',
-    );
+    logger.warn('Could not print routes (fastify.printRoutes unavailable).');
   }
 }
 void bootstrap();

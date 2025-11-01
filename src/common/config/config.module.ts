@@ -14,6 +14,8 @@ const envSchema = z.object({
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
+  LOG_DIR: z.string().optional().default('logs'),
+  LOG_RETENTION_DAYS: z.string().optional().default('30'),
 });
 
 function validateEnv(config: Record<string, unknown>) {

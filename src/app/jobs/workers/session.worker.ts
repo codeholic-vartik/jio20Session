@@ -4,6 +4,9 @@ import { PrismaClient } from '@prisma/client';
 import { generateUid } from '../../../common/utils/uuid.util';
 import { generateSessionName } from '../../../common/utils/session.util';
 import { SessionStatus } from '../../../common/types/enums';
+import { createStandaloneLogger } from '../../../common/logger/logger.util';
+
+const logger = createStandaloneLogger('SessionWorker');
 
 /**
  * Creates Redis connection with proper error handling and retry logic
@@ -19,14 +22,14 @@ function createRedisConnection(): IORedis {
     retryStrategy: (times) => {
       // Retry with exponential backoff, max 3 retries
       if (times > 3) {
-        console.error(
-          `[WORKER] Redis connection failed after ${times} attempts. Giving up.`,
+        logger.error(
+          `Redis connection failed after ${times} attempts. Giving up.`,
         );
         return null; // Stop retrying
       }
       const delay = Math.min(times * 200, 2000);
-      console.warn(
-        `[WORKER] Redis connection failed, retrying in ${delay}ms (attempt ${times})`,
+      logger.warn(
+        `Redis connection failed, retrying in ${delay}ms (attempt ${times})`,
       );
       return delay;
     },
@@ -44,16 +47,16 @@ function createRedisConnection(): IORedis {
 
   // Handle connection errors gracefully
   connection.on('error', (err) => {
-    console.error(`[WORKER] Redis connection error: ${err.message}`);
+    logger.error(`Redis connection error: ${err.message}`);
     // Don't crash - let BullMQ handle reconnection
   });
 
   connection.on('connect', () => {
-    console.log('[WORKER] Redis connection established');
+    logger.info('Redis connection established');
   });
 
   connection.on('close', () => {
-    console.warn('[WORKER] Redis connection closed');
+    logger.warn('Redis connection closed');
   });
 
   return connection;
@@ -203,8 +206,8 @@ async function createSession(
     updatedProfile.max_sessions !== null &&
     updatedProfile.sessions_count >= updatedProfile.max_sessions
   ) {
-    console.log(
-      `WORKER: Max sessions limit reached for profile ${sessionProfileId}. Disabling sales for related taxonomy terms.`,
+    logger.info(
+      `Max sessions limit reached for profile ${sessionProfileId}. Disabling sales for related taxonomy terms.`,
     );
 
     // Get all taxonomy terms related to this profile
@@ -238,8 +241,8 @@ async function createSession(
 
       await Promise.all(redisPromises);
 
-      console.log(
-        `WORKER: Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}`,
+      logger.info(
+        `Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}`,
       );
     }
   }
@@ -296,8 +299,8 @@ export const sessionWorker = new Worker(
           }),
         );
 
-        console.log(
-          `WORKER: Processing threshold reached - session_id=${sessionId}, session_profile_id=${sessionProfileId}`,
+        logger.info(
+          `Processing threshold reached - session_id=${sessionId}, session_profile_id=${sessionProfileId}`,
         );
 
         // Create the new session
@@ -320,8 +323,8 @@ export const sessionWorker = new Worker(
         // Delete the sales count key from Redis after successful session creation
         const salesKey = `session:sales:${sessionId}`;
         await connection.del(salesKey);
-        console.log(
-          `WORKER: Session created successfully - new_session_id=${result.newSessionId}, deleted sales key: ${salesKey}`,
+        logger.info(
+          `Session created successfully - new_session_id=${result.newSessionId}, deleted sales key: ${salesKey}`,
         );
 
         return Promise.resolve({
@@ -338,8 +341,14 @@ export const sessionWorker = new Worker(
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
 
-        console.error(
-          `WORKER: Failed to create session - session_id=${sessionId}, session_profile_id=${sessionProfileId}, error=${errorMessage}`,
+        logger.error(
+          {
+            sessionId,
+            sessionProfileId,
+            error: errorMessage,
+            stack: error instanceof Error ? error.stack : undefined,
+          },
+          `Failed to create session`,
         );
 
         // Update Redis with error info but keep isCreated: false
@@ -362,7 +371,7 @@ export const sessionWorker = new Worker(
 
     if (job.name === 'sync-sales') {
       try {
-        console.log('WORKER: Starting sales count sync from Redis to database');
+        logger.info('Starting sales count sync from Redis to database');
 
         // Scan Redis for all keys matching session:sales:* pattern
         const redisKeys: string[] = [];
@@ -381,7 +390,7 @@ export const sessionWorker = new Worker(
         } while (cursor !== '0');
 
         if (redisKeys.length === 0) {
-          console.log('WORKER: No sales data found in Redis to sync');
+          logger.info('No sales data found in Redis to sync');
           return Promise.resolve({
             synced: true,
             total: 0,
@@ -390,8 +399,8 @@ export const sessionWorker = new Worker(
           });
         }
 
-        console.log(
-          `WORKER: Found ${redisKeys.length} sessions with sales data in Redis`,
+        logger.info(
+          `Found ${redisKeys.length} sessions with sales data in Redis`,
         );
 
         let updated = 0;
@@ -427,7 +436,7 @@ export const sessionWorker = new Worker(
         }
 
         if (sessionDataMap.size === 0) {
-          console.log('WORKER: No valid session data found in Redis');
+          logger.info('No valid session data found in Redis');
           return Promise.resolve({
             synced: true,
             total: 0,
@@ -436,9 +445,7 @@ export const sessionWorker = new Worker(
           });
         }
 
-        console.log(
-          `WORKER: Processing ${sessionDataMap.size} sessions for sync`,
-        );
+        logger.info(`Processing ${sessionDataMap.size} sessions for sync`);
 
         // Fetch ONLY sessions that exist in Redis (optimized bulk query)
         const sessionIds = Array.from(sessionDataMap.keys());
@@ -472,9 +479,7 @@ export const sessionWorker = new Worker(
               // Check if Redis key still exists (might be deleted during session creation)
               const keyExists = await connection.exists(redisKey);
               if (!keyExists) {
-                console.log(
-                  `WORKER: Redis key ${redisKey} already deleted, skipping`,
-                );
+                logger.debug(`Redis key ${redisKey} already deleted, skipping`);
                 return;
               }
 
@@ -483,8 +488,8 @@ export const sessionWorker = new Worker(
               if (!session) {
                 // Session doesn't exist in DB, remove Redis key
                 await connection.del(redisKey);
-                console.log(
-                  `WORKER: Session ${sessionId} not found in DB, removed Redis key`,
+                logger.warn(
+                  `Session ${sessionId} not found in DB, removed Redis key`,
                 );
                 return;
               }
@@ -494,8 +499,8 @@ export const sessionWorker = new Worker(
               // Skip if no sales to sync (already synced)
               if (redisCount === 0) {
                 await connection.del(redisKey);
-                console.log(
-                  `WORKER: Session ${sessionId} already synced (redisCount=0), removed Redis key`,
+                logger.debug(
+                  `Session ${sessionId} already synced (redisCount=0), removed Redis key`,
                 );
                 return;
               }
@@ -512,16 +517,21 @@ export const sessionWorker = new Worker(
               // Remove Redis key after successful update
               await connection.del(redisKey);
               updated++;
-              console.log(
-                `WORKER: Updated session ${sessionId}: ${currentDbCount} + ${redisCount} = ${newCount}`,
+              logger.debug(
+                `Updated session ${sessionId}: ${currentDbCount} + ${redisCount} = ${newCount}`,
               );
             } catch (error) {
               errors++;
               const errorMessage =
                 error instanceof Error ? error.message : String(error);
 
-              console.error(
-                `WORKER: Failed to update session ${sessionId}: ${errorMessage}`,
+              logger.error(
+                {
+                  sessionId,
+                  error: errorMessage,
+                  stack: error instanceof Error ? error.stack : undefined,
+                },
+                `Failed to update session`,
               );
             }
           });
@@ -534,8 +544,8 @@ export const sessionWorker = new Worker(
           }
         }
 
-        console.log(
-          `WORKER: Sales count sync completed - total=${sessionDataMap.size}, updated=${updated}, errors=${errors}`,
+        logger.info(
+          `Sales count sync completed - total=${sessionDataMap.size}, updated=${updated}, errors=${errors}`,
         );
 
         return Promise.resolve({
@@ -547,7 +557,13 @@ export const sessionWorker = new Worker(
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : 'Unknown error';
-        console.error(`WORKER: Sales count sync failed: ${errorMessage}`);
+        logger.error(
+          {
+            error: errorMessage,
+            stack: error instanceof Error ? error.stack : undefined,
+          },
+          'Sales count sync failed',
+        );
         throw error;
       }
     }
