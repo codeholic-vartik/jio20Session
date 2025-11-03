@@ -157,7 +157,7 @@ export class SessionService {
     });
 
     // Update session profile sessions_count
-    const updatedProfile = await this.prisma.session_profiles.update({
+    await this.prisma.session_profiles.update({
       where: { id: sessionProfileId },
       data: {
         sessions_count: {
@@ -165,17 +165,6 @@ export class SessionService {
         },
       },
     });
-
-    // Check if max_sessions limit reached and disable sales
-    if (
-      updatedProfile.max_sessions !== null &&
-      updatedProfile.sessions_count >= updatedProfile.max_sessions
-    ) {
-      this.logger.warn(
-        `Max sessions limit reached for profile ${sessionProfileId}. Disabling sales for related taxonomy terms.`,
-      );
-      await this.disableSalesForProfile(sessionProfileId);
-    }
 
     this.logger.log(
       `Session created successfully: new_session_id=${newSession.id}, suid=${suid}`,

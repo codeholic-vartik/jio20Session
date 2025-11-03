@@ -221,7 +221,7 @@ async function createSession(
   });
 
   // Update session profile sessions_count
-  const updatedProfile = await prisma.session_profiles.update({
+  await prisma.session_profiles.update({
     where: { id: sessionProfileId },
     data: {
       sessions_count: {
@@ -229,95 +229,6 @@ async function createSession(
       },
     },
   });
-
-  // Check if max_sessions limit reached and disable sales
-  if (
-    updatedProfile.max_sessions !== null &&
-    updatedProfile.sessions_count >= updatedProfile.max_sessions
-  ) {
-    logger.info(
-      `Max sessions limit reached for profile ${sessionProfileId}. Disabling sales for related taxonomy terms.`,
-    );
-
-    // Get all taxonomy terms related to this profile
-    const sessionTaxonomyTerms = await prisma.session_taxonomy_terms.findMany({
-      where: {
-        session_profile_id: sessionProfileId,
-        is_enabled: true,
-      },
-      select: {
-        term_id: true,
-      },
-    });
-
-    if (sessionTaxonomyTerms.length > 0) {
-      // Calculate total max sales per term = max_sessions * sales_trigger_count
-      const salesTriggerCount = updatedProfile.sales_trigger_count || 0;
-      const totalMaxSalesPerTerm =
-        updatedProfile.max_sessions * salesTriggerCount;
-
-      // Calculate current total sales for all sessions of this profile
-      const allProfileSessions = await prisma.sessions.findMany({
-        where: {
-          session_profile_id: sessionProfileId,
-          is_deleted: false,
-        },
-        select: {
-          current_sales_count: true,
-        },
-      });
-
-      const currentTotalSales = allProfileSessions.reduce(
-        (sum, session) => sum + (session.current_sales_count || 0),
-        0,
-      );
-
-      // Calculate remaining sales per term
-      const remainingSales = Math.max(
-        0,
-        totalMaxSalesPerTerm - currentTotalSales,
-      );
-
-      // Disable in database
-      await prisma.session_taxonomy_terms.updateMany({
-        where: {
-          session_profile_id: sessionProfileId,
-          is_enabled: true,
-        },
-        data: {
-          is_enabled: false,
-        },
-      });
-
-      // Set Redis flags for fast checks and publish sales threshold updates
-      const redisPromises = sessionTaxonomyTerms.map((term) => {
-        const redisKey = `taxonomy:${term.term_id}:sales_disabled`;
-        const channel = `session:sales:term:${term.term_id}`;
-        const payload = JSON.stringify({
-          term_id: term.term_id,
-          remaining_sales: remainingSales,
-          total_max_sales: totalMaxSalesPerTerm,
-          current_sales: currentTotalSales,
-          max_sessions: updatedProfile.max_sessions,
-          sales_trigger_count: salesTriggerCount,
-          profile_id: sessionProfileId,
-          threshold_reached: true,
-          timestamp: new Date().toISOString(),
-        });
-
-        return Promise.all([
-          connection.setex(redisKey, 2592000, '1'), // 30 days TTL
-          connection.publish(channel, payload), // Publish to pub/sub channel
-        ]);
-      });
-
-      await Promise.all(redisPromises);
-
-      logger.info(
-        `Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}. Remaining sales: ${remainingSales} (Total max: ${totalMaxSalesPerTerm}, Current: ${currentTotalSales})`,
-      );
-    }
-  }
 
   return {
     success: true,

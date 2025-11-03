@@ -320,6 +320,21 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
           ? sessionError.message
           : String(sessionError);
       this.logger.error(`${errorMessage}`);
+
+      // If max sessions limit reached, disable sales before continuing
+      if (errorMessage.includes('Maximum sessions limit reached')) {
+        this.logger.log(
+          `Max sessions limit reached. Disabling sales for profile ${sessionProfileId}`,
+        );
+        try {
+          await this.sessionService.disableSalesForProfile(sessionProfileId);
+        } catch (disableError) {
+          this.logger.error(
+            `Failed to disable sales after max sessions limit: ${disableError instanceof Error ? disableError.message : String(disableError)}`,
+          );
+        }
+      }
+
       // Continue execution even if session creation fails
     }
   }
