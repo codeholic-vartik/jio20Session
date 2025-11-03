@@ -116,10 +116,121 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       const options: RedisOptions = {
         ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),
         db: dbIndex,
+        retryStrategy: (times) => {
+          // Retry indefinitely with exponential backoff
+          const delay = Math.min(times * 200, 5000); // Max 5 seconds between retries
+          this.logger.warn(
+            `Redis subscriber connection failed, retrying in ${delay}ms (attempt ${times})`,
+          );
+          return delay; // Keep retrying - never return null
+        },
+        reconnectOnError: (err) => {
+          // Reconnect on any connection-related errors
+          const reconnectErrors = [
+            'READONLY',
+            'ECONNREFUSED',
+            'ETIMEDOUT',
+            'ENOTFOUND',
+            'ECONNRESET',
+            'EPIPE',
+            'Connection lost',
+            'Connection closed',
+          ];
+
+          const shouldReconnect = reconnectErrors.some((errorType) =>
+            err.message.includes(errorType),
+          );
+
+          if (shouldReconnect) {
+            this.logger.warn(
+              `Redis subscriber error detected (${err.message}), attempting reconnection...`,
+            );
+            return true;
+          }
+
+          return false;
+        },
+        enableReadyCheck: true,
+        enableOfflineQueue: false, // Pub/sub doesn't queue messages
+        connectTimeout: 10000, // 10 second connection timeout
+        keepAlive: 30000, // Send keepalive every 30 seconds
+        lazyConnect: false, // Connect immediately
       };
       this.subscriber = new IORedis(redisUrl, options);
+      let isInitialSubscription = true; // Track if this is the first subscription
 
-      // Subscribe to the channel
+      // Handle connection events
+      this.subscriber.on('connect', () => {
+        this.logger.log('Redis subscriber connection established');
+      });
+
+      // Set up re-subscription handler for reconnections (not initial connection)
+      this.subscriber.on('ready', () => {
+        this.logger.log('Redis subscriber connection ready');
+        // Only re-subscribe on reconnections, not initial connection
+        if (!isInitialSubscription) {
+          this.subscriber
+            ?.subscribe(THRESHOLD_REACHED_CHANNEL)
+            .then(() => {
+              this.logger.log(
+                `Re-subscribed to Redis channel: ${THRESHOLD_REACHED_CHANNEL}`,
+              );
+            })
+            .catch((err) => {
+              this.logger.error(
+                `Failed to re-subscribe to channel: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
+        }
+      });
+
+      // Wait for connection to be ready before initial subscribe
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(
+            new Error(
+              'Redis subscriber connection timeout - Redis may be unavailable',
+            ),
+          );
+        }, 30000); // 30 second timeout
+
+        // Check if already ready
+        if (this.subscriber?.status === 'ready') {
+          clearTimeout(timeout);
+          resolve();
+          return;
+        }
+
+        const onReady = () => {
+          clearTimeout(timeout);
+          this.subscriber?.removeListener('error', onError);
+          resolve();
+        };
+
+        const onError = (err: Error) => {
+          clearTimeout(timeout);
+          this.subscriber?.removeListener('ready', onReady);
+          reject(err);
+        };
+
+        this.subscriber?.once('ready', onReady);
+        this.subscriber?.once('error', onError);
+      });
+
+      // Now that connection is ready, do initial subscription
+      isInitialSubscription = false;
+
+      this.subscriber.on('close', () => {
+        this.logger.warn(
+          'Redis subscriber connection closed - will attempt to reconnect',
+        );
+      });
+
+      this.subscriber.on('reconnecting', (delay: number) => {
+        this.logger.warn(`Redis subscriber reconnecting in ${delay}ms...`);
+      });
+
+      // Subscribe to the channel (connection is now ready)
       await this.subscriber.subscribe(THRESHOLD_REACHED_CHANNEL);
       this.logger.log(
         `Subscribed to Redis channel: ${THRESHOLD_REACHED_CHANNEL}`,

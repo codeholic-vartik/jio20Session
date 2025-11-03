@@ -5,23 +5,29 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Creates a standalone logger instance for use outside of NestJS dependency injection
- * (e.g., in workers, standalone scripts, etc.)
- * Uses NestJS Logger for development, Winston for production
+ * Type definition for standalone logger instances
+ * Can be reused throughout the codebase for type safety
  */
-export function createStandaloneLogger(context?: string): {
+export interface StandaloneLogger {
   log: (message: string, context?: string) => void;
   error: (message: string, trace?: string, context?: string) => void;
   warn: (message: string, context?: string) => void;
   debug: (message: string, context?: string) => void;
   info: (message: string, context?: string) => void;
-} {
+}
+
+/**
+ * Creates a standalone logger instance for use outside of NestJS dependency injection
+ * (e.g., in workers, standalone scripts, etc.)
+ * Uses NestJS Logger for development, Winston for production
+ */
+export function createStandaloneLogger(context?: string): StandaloneLogger {
   const isDevelopment = process.env.NODE_ENV !== 'production';
 
   if (isDevelopment) {
     // Use NestJS built-in Logger for development
     const nestLogger = new Logger(context);
-    return {
+    const logger: StandaloneLogger = {
       log: (message: string, ctx?: string) =>
         nestLogger.log(message, ctx || context),
       error: (message: string, trace?: string, ctx?: string) =>
@@ -33,6 +39,7 @@ export function createStandaloneLogger(context?: string): {
       info: (message: string, ctx?: string) =>
         nestLogger.log(message, ctx || context),
     };
+    return logger;
   }
 
   // Production: Use Winston with file rotation
@@ -95,7 +102,7 @@ export function createStandaloneLogger(context?: string): {
     ],
   });
 
-  return {
+  const logger: StandaloneLogger = {
     log: (message: string, ctx?: string) =>
       winstonLogger.info(message, { context: ctx || context }),
     error: (message: string, trace?: string, ctx?: string) =>
@@ -107,4 +114,5 @@ export function createStandaloneLogger(context?: string): {
     info: (message: string, ctx?: string) =>
       winstonLogger.info(message, { context: ctx || context }),
   };
+  return logger;
 }

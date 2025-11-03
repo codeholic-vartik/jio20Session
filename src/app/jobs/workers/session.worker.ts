@@ -4,9 +4,12 @@ import { PrismaClient } from '@prisma/client';
 import { generateUid } from '../../../common/utils/uuid.util';
 import { generateSessionName } from '../../../common/utils/session.util';
 import { SessionStatus } from '../../../common/types/enums';
-import { createStandaloneLogger } from '../../../common/logger/logger.util';
+import {
+  createStandaloneLogger,
+  StandaloneLogger,
+} from '../../../common/logger/logger.util';
 
-const logger = createStandaloneLogger('SessionWorker');
+const logger: StandaloneLogger = createStandaloneLogger('SessionWorker');
 
 /**
  * Creates Redis connection with proper error handling and retry logic
@@ -20,43 +23,69 @@ function createRedisConnection(): IORedis {
   const connection = new IORedis(redisUrl, {
     maxRetriesPerRequest: null, // Required by BullMQ for blocking commands
     retryStrategy: (times) => {
-      // Retry with exponential backoff, max 3 retries
-      if (times > 3) {
-        logger.error(
-          `Redis connection failed after ${times} attempts. Giving up.`,
-        );
-        return null; // Stop retrying
-      }
-      const delay = Math.min(times * 200, 2000);
+      // Retry indefinitely with exponential backoff
+      // This ensures the connection keeps trying even if Redis is temporarily unavailable
+      const delay = Math.min(times * 200, 5000); // Max 5 seconds between retries
       logger.warn(
         `Redis connection failed, retrying in ${delay}ms (attempt ${times})`,
       );
-      return delay;
+      return delay; // Keep retrying - never return null
     },
     reconnectOnError: (err) => {
-      const targetError = 'READONLY';
-      if (err.message.includes(targetError)) {
-        // Only reconnect when encountering READONLY error
+      // Reconnect on any connection-related errors, not just READONLY
+      const reconnectErrors = [
+        'READONLY',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'ECONNRESET',
+        'EPIPE',
+        'Connection lost',
+        'Connection closed',
+      ];
+
+      const shouldReconnect = reconnectErrors.some((errorType) =>
+        err.message.includes(errorType),
+      );
+
+      if (shouldReconnect) {
+        logger.warn(
+          `Redis error detected (${err.message}), attempting reconnection...`,
+        );
         return true;
       }
+
+      // For other errors, let IORedis handle them
       return false;
     },
     enableReadyCheck: true,
     lazyConnect: false, // Connect immediately
+    enableOfflineQueue: true, // Queue commands when disconnected
+    connectTimeout: 10000, // 10 second connection timeout
+    // Keep connection alive
+    keepAlive: 30000, // Send keepalive every 30 seconds
   });
 
   // Handle connection errors gracefully
   connection.on('error', (err) => {
     logger.error(`Redis connection error: ${err.message}`);
-    // Don't crash - let BullMQ handle reconnection
+    // Don't crash - IORedis will handle reconnection automatically
   });
 
   connection.on('connect', () => {
     logger.info('Redis connection established');
   });
 
+  connection.on('ready', () => {
+    logger.info('Redis connection ready and operational');
+  });
+
   connection.on('close', () => {
-    logger.warn('Redis connection closed');
+    logger.warn('Redis connection closed - will attempt to reconnect');
+  });
+
+  connection.on('reconnecting', (delay: number) => {
+    logger.warn(`Redis reconnecting in ${delay}ms...`);
   });
 
   return connection;
@@ -222,6 +251,33 @@ async function createSession(
     });
 
     if (sessionTaxonomyTerms.length > 0) {
+      // Calculate total max sales per term = max_sessions * sales_trigger_count
+      const salesTriggerCount = updatedProfile.sales_trigger_count || 0;
+      const totalMaxSalesPerTerm =
+        updatedProfile.max_sessions * salesTriggerCount;
+
+      // Calculate current total sales for all sessions of this profile
+      const allProfileSessions = await prisma.sessions.findMany({
+        where: {
+          session_profile_id: sessionProfileId,
+          is_deleted: false,
+        },
+        select: {
+          current_sales_count: true,
+        },
+      });
+
+      const currentTotalSales = allProfileSessions.reduce(
+        (sum, session) => sum + (session.current_sales_count || 0),
+        0,
+      );
+
+      // Calculate remaining sales per term
+      const remainingSales = Math.max(
+        0,
+        totalMaxSalesPerTerm - currentTotalSales,
+      );
+
       // Disable in database
       await prisma.session_taxonomy_terms.updateMany({
         where: {
@@ -233,16 +289,32 @@ async function createSession(
         },
       });
 
-      // Set Redis flags for fast checks
+      // Set Redis flags for fast checks and publish sales threshold updates
       const redisPromises = sessionTaxonomyTerms.map((term) => {
         const redisKey = `taxonomy:${term.term_id}:sales_disabled`;
-        return connection.setex(redisKey, 2592000, '1'); // 30 days TTL
+        const channel = `session:sales:term:${term.term_id}`;
+        const payload = JSON.stringify({
+          term_id: term.term_id,
+          remaining_sales: remainingSales,
+          total_max_sales: totalMaxSalesPerTerm,
+          current_sales: currentTotalSales,
+          max_sessions: updatedProfile.max_sessions,
+          sales_trigger_count: salesTriggerCount,
+          profile_id: sessionProfileId,
+          threshold_reached: true,
+          timestamp: new Date().toISOString(),
+        });
+
+        return Promise.all([
+          connection.setex(redisKey, 2592000, '1'), // 30 days TTL
+          connection.publish(channel, payload), // Publish to pub/sub channel
+        ]);
       });
 
       await Promise.all(redisPromises);
 
       logger.info(
-        `Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}`,
+        `Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}. Remaining sales: ${remainingSales} (Total max: ${totalMaxSalesPerTerm}, Current: ${currentTotalSales})`,
       );
     }
   }

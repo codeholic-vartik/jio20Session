@@ -3,9 +3,12 @@ import { IoAdapter } from '@nestjs/platform-socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import Redis, { RedisOptions } from 'ioredis';
 import { Server, ServerOptions } from 'socket.io';
-import { createStandaloneLogger } from '../../common/logger/logger.util';
+import {
+  createStandaloneLogger,
+  StandaloneLogger,
+} from '../../common/logger/logger.util';
 
-const logger = createStandaloneLogger('RedisIoAdapter');
+const logger: StandaloneLogger = createStandaloneLogger('RedisIoAdapter');
 
 export class RedisIoAdapter extends IoAdapter {
   private pubClient: Redis | null = null;
@@ -61,9 +64,87 @@ export class RedisIoAdapter extends IoAdapter {
     const redisOptions: RedisOptions = {
       ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),
       db: dbIndex,
+      retryStrategy: (times) => {
+        // Retry indefinitely with exponential backoff
+        const delay = Math.min(times * 200, 5000); // Max 5 seconds between retries
+        logger.warn(
+          `Redis IO adapter connection failed, retrying in ${delay}ms (attempt ${times})`,
+        );
+        return delay; // Keep retrying - never return null
+      },
+      reconnectOnError: (err) => {
+        // Reconnect on any connection-related errors
+        const reconnectErrors = [
+          'READONLY',
+          'ECONNREFUSED',
+          'ETIMEDOUT',
+          'ENOTFOUND',
+          'ECONNRESET',
+          'EPIPE',
+          'Connection lost',
+          'Connection closed',
+        ];
+
+        const shouldReconnect = reconnectErrors.some((errorType) =>
+          err.message.includes(errorType),
+        );
+
+        if (shouldReconnect) {
+          logger.warn(
+            `Redis IO adapter error detected (${err.message}), attempting reconnection...`,
+          );
+          return true;
+        }
+
+        return false;
+      },
+      enableReadyCheck: true,
+      connectTimeout: 10000, // 10 second connection timeout
+      keepAlive: 30000, // Send keepalive every 30 seconds
     };
-    this.pubClient = new Redis(this.redisUrl, redisOptions);
-    this.subClient = new Redis(this.redisUrl, redisOptions);
+    const pubClient = new Redis(this.redisUrl, redisOptions);
+    const subClient = new Redis(this.redisUrl, redisOptions);
+
+    this.pubClient = pubClient;
+    this.subClient = subClient;
+
+    // Set up connection event handlers for pub client
+    pubClient.on('error', (err) => {
+      logger.error(`Redis pub client error: ${err.message}`);
+    });
+
+    pubClient.on('connect', () => {
+      logger.log('Redis pub client connection established');
+    });
+
+    pubClient.on('ready', () => {
+      logger.log('Redis pub client connection ready');
+    });
+
+    pubClient.on('close', () => {
+      logger.warn(
+        'Redis pub client connection closed - will attempt to reconnect',
+      );
+    });
+
+    // Set up connection event handlers for sub client
+    subClient.on('error', (err) => {
+      logger.error(`Redis sub client error: ${err.message}`);
+    });
+
+    subClient.on('connect', () => {
+      logger.log('Redis sub client connection established');
+    });
+
+    subClient.on('ready', () => {
+      logger.log('Redis sub client connection ready');
+    });
+
+    subClient.on('close', () => {
+      logger.warn(
+        'Redis sub client connection closed - will attempt to reconnect',
+      );
+    });
 
     // Enforce or warn about eviction policy (on publisher client only)
     try {

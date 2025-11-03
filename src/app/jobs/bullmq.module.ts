@@ -112,12 +112,76 @@ async function checkEvictionPolicy(client: IORedis): Promise<void> {
         const options: RedisOptions = {
           ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),
           db: dbIndex,
+          maxRetriesPerRequest: null, // Required by BullMQ for blocking commands
+          retryStrategy: (times) => {
+            // Retry indefinitely with exponential backoff
+            const delay = Math.min(times * 200, 5000); // Max 5 seconds between retries
+            console.warn(
+              `[BullMQ] Redis connection failed, retrying in ${delay}ms (attempt ${times})`,
+            );
+            return delay; // Keep retrying - never return null
+          },
+          reconnectOnError: (err) => {
+            // Reconnect on any connection-related errors
+            const reconnectErrors = [
+              'READONLY',
+              'ECONNREFUSED',
+              'ETIMEDOUT',
+              'ENOTFOUND',
+              'ECONNRESET',
+              'EPIPE',
+              'Connection lost',
+              'Connection closed',
+            ];
+
+            const shouldReconnect = reconnectErrors.some((errorType) =>
+              err.message.includes(errorType),
+            );
+
+            if (shouldReconnect) {
+              console.warn(
+                `[BullMQ] Redis error detected (${err.message}), attempting reconnection...`,
+              );
+              return true;
+            }
+
+            return false;
+          },
+          enableReadyCheck: true,
+          enableOfflineQueue: true, // Queue commands when disconnected
+          connectTimeout: 10000, // 10 second connection timeout
+          keepAlive: 30000, // Send keepalive every 30 seconds
         };
 
         const client = new IORedis(url, options);
 
+        // Set up connection event handlers
+        client.on('error', (err) => {
+          console.error(`[BullMQ] Redis connection error: ${err.message}`);
+        });
+
+        client.on('connect', () => {
+          console.log('[BullMQ] Redis connection established');
+        });
+
+        client.on('ready', () => {
+          console.log('[BullMQ] Redis connection ready and operational');
+        });
+
+        client.on('close', () => {
+          console.warn(
+            '[BullMQ] Redis connection closed - will attempt to reconnect',
+          );
+        });
+
+        client.on('reconnecting', (delay: number) => {
+          console.warn(`[BullMQ] Redis reconnecting in ${delay}ms...`);
+        });
+
         // Check eviction policy (non-blocking)
-        await checkEvictionPolicy(client);
+        await checkEvictionPolicy(client).catch(() => {
+          // Ignore errors during eviction check - connection might not be ready yet
+        });
 
         return client;
       },

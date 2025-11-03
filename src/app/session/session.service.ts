@@ -191,11 +191,28 @@ export class SessionService {
   /**
    * Disables sales for all taxonomy terms related to a session profile.
    * Sets is_enabled = false in session_taxonomy_terms and Redis flags.
+   * Publishes real-time updates to Redis pub/sub channel sales:term:{termId}
    *
    * @param sessionProfileId - The session profile ID
    */
   async disableSalesForProfile(sessionProfileId: number): Promise<void> {
     try {
+      // Get session profile to calculate sales limits
+      const sessionProfile = await this.prisma.session_profiles.findUnique({
+        where: { id: sessionProfileId },
+        select: {
+          max_sessions: true,
+          sales_trigger_count: true,
+        },
+      });
+
+      if (!sessionProfile) {
+        this.logger.warn(
+          `Session profile ${sessionProfileId} not found for sales disable`,
+        );
+        return;
+      }
+
       // Get all taxonomy terms related to this profile
       const sessionTaxonomyTerms =
         await this.prisma.session_taxonomy_terms.findMany({
@@ -215,6 +232,35 @@ export class SessionService {
         return;
       }
 
+      // Calculate total max sales per term = max_sessions * sales_trigger_count
+      const salesTriggerCount = sessionProfile.sales_trigger_count || 0;
+      const totalMaxSalesPerTerm =
+        sessionProfile.max_sessions && salesTriggerCount
+          ? sessionProfile.max_sessions * salesTriggerCount
+          : 0;
+
+      // Calculate current total sales for all sessions of this profile
+      const allProfileSessions = await this.prisma.sessions.findMany({
+        where: {
+          session_profile_id: sessionProfileId,
+          is_deleted: false,
+        },
+        select: {
+          current_sales_count: true,
+        },
+      });
+
+      const currentTotalSales = allProfileSessions.reduce(
+        (sum, session) => sum + (session.current_sales_count || 0),
+        0,
+      );
+
+      // Calculate remaining sales per term
+      const remainingSales = Math.max(
+        0,
+        totalMaxSalesPerTerm - currentTotalSales,
+      );
+
       // Disable in database
       await this.prisma.session_taxonomy_terms.updateMany({
         where: {
@@ -226,16 +272,32 @@ export class SessionService {
         },
       });
 
-      // Set Redis flags for fast checks (FastAPI can check these)
+      // Set Redis flags for fast checks and publish sales threshold updates
       const redisPromises = sessionTaxonomyTerms.map((term) => {
         const redisKey = `taxonomy:${term.term_id}:sales_disabled`;
-        return this.redis.setex(redisKey, 2592000, '1'); // 30 days TTL
+        const channel = `session:sales:term:${term.term_id}`;
+        const payload = JSON.stringify({
+          term_id: term.term_id,
+          remaining_sales: remainingSales,
+          total_max_sales: totalMaxSalesPerTerm,
+          current_sales: currentTotalSales,
+          max_sessions: sessionProfile.max_sessions,
+          sales_trigger_count: salesTriggerCount,
+          profile_id: sessionProfileId,
+          threshold_reached: true,
+          timestamp: new Date().toISOString(),
+        });
+
+        return Promise.all([
+          this.redis.setex(redisKey, 2592000, '1'), // 30 days TTL
+          this.redis.publish(channel, payload), // Publish to pub/sub channel
+        ]);
       });
 
       await Promise.all(redisPromises);
 
       this.logger.log(
-        `Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}`,
+        `Disabled sales for ${sessionTaxonomyTerms.length} taxonomy terms for profile ${sessionProfileId}. Remaining sales: ${remainingSales} (Total max: ${totalMaxSalesPerTerm}, Current: ${currentTotalSales})`,
       );
     } catch (error) {
       const errorMessage =
