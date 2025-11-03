@@ -1,49 +1,44 @@
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
-import type {
-  FastifyInstance,
-  FastifyReply,
-  FastifyRequest,
-} from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 export function registerWsDocsUi(app: NestFastifyApplication): void {
   const fastify: FastifyInstance = app.getHttpAdapter().getInstance();
 
-  fastify.addHook('onSend', async (
-    request: FastifyRequest,
-    reply: FastifyReply,
-    payload: any,
-  ) => {
-    const url = request.url || '';
-    if (url.startsWith('/ws-docs/ui')) {
-      try {
-        reply.removeHeader('content-security-policy');
-        reply.removeHeader('x-frame-options');
-      } catch {
-        /* noop */
+  fastify.addHook(
+    'onSend',
+    async (request: FastifyRequest, reply: FastifyReply, payload: any) => {
+      const url = request.url || '';
+      if (url.startsWith('/ws-docs/ui')) {
+        try {
+          reply.removeHeader('content-security-policy');
+          reply.removeHeader('x-frame-options');
+        } catch {
+          /* noop */
+        }
       }
-    }
 
-    // Inject a header button into AsyncAPI docs page at /ws-docs
-    if (
-      (url === '/ws-docs' || url.startsWith('/ws-docs?')) &&
-      typeof payload === 'string' &&
-      payload.includes('</body>')
-    ) {
-      try {
-        const injection = `\n<style>
+      // Inject a header button into AsyncAPI docs page at /ws-docs
+      if (
+        (url === '/ws-docs' || url.startsWith('/ws-docs?')) &&
+        typeof payload === 'string' &&
+        payload.includes('</body>')
+      ) {
+        try {
+          const injection = `\n<style>
   .ws-docs-launch { position: fixed; top: 14px; right: 14px; z-index: 9999; }
   .ws-docs-launch a { text-decoration: none; padding: 8px 12px; border-radius: 8px; border: 1px solid #213051; background: #121b38; color: #e6e8f0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
   .ws-docs-launch a:hover { background: #203464; }
 </style>
 <div class="ws-docs-launch"><a href="/ws-docs/ui" title="Open Socket Tester">Open Tester</a></div>`;
-        const updated = payload.replace('</body>', `${injection}\n</body>`);
-        return updated;
-      } catch {
-        // fall through with original payload
+          const updated = payload.replace('</body>', `${injection}\n</body>`);
+          return updated;
+        } catch {
+          // fall through with original payload
+        }
       }
-    }
-    return payload;
-  });
+      return payload as unknown as string;
+    },
+  );
 
   fastify.get('/ws-docs/ui', async (req: FastifyRequest, res: FastifyReply) => {
     const xfProto = req.headers['x-forwarded-proto'] as string | undefined;
@@ -54,6 +49,7 @@ export function registerWsDocsUi(app: NestFastifyApplication): void {
       req.headers.host ||
       'localhost:9000';
     const origin = `${proto}://${host}`;
+    const wsNamespace = process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
     const html = `<!doctype html>
 <html>
   <head>
@@ -89,7 +85,7 @@ export function registerWsDocsUi(app: NestFastifyApplication): void {
           <div class="row">
             <div>
               <label>Namespace</label>
-              <input id="ns" value="/ws" />
+              <input id="ns" value="${wsNamespace}" />
             </div>
             <div>
               <label>Auth (JSON)</label>
@@ -160,7 +156,7 @@ export function registerWsDocsUi(app: NestFastifyApplication): void {
         const urlEl = document.getElementById('url');
         let base = urlEl.value;
         if (typeof base === 'string' and base.endsWith('/')) base = base.slice(0, -1);
-        const ns = document.getElementById('ns').value || '/ws';
+        const ns = document.getElementById('ns').value || '${wsNamespace}';
         let auth = {};
         try { auth = JSON.parse(document.getElementById('auth').value || '{}'); } catch {}
         if (socket and socket.connected) socket.disconnect();

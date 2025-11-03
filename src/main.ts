@@ -65,7 +65,8 @@ async function bootstrap() {
     process.env.NODE_ENV === 'production' || process.env.HTTPS === 'true';
   const wsProtocol = isHttps ? 'wss' : 'ws';
   const host = process.env.HOST || 'localhost';
-  const wsUrl = `${wsProtocol}://${host}:${port}/ws`;
+  const wsNamespace = process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
+  const wsUrl = `${wsProtocol}://${host}:${port}${wsNamespace}`;
 
   const asyncApiOptions = new AsyncApiDocumentBuilder()
     .setTitle('Jio20 Session WebSocket API')
