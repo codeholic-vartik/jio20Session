@@ -200,8 +200,9 @@ async function createSession(
   const sessionNumber = sessionProfile.sessions_count + 1;
   const sessionName = generateSessionName(sessionProfile.title, sessionNumber);
 
-  // Set initial sales count to sales_trigger_count (or 0 if not set)
-  const initialSalesCount = sessionProfile.sales_trigger_count || 0;
+  // New sessions always start with 0 sales count
+  // sales_trigger_count is the threshold/limit per session, not an initial count
+  const initialSalesCount = 0;
 
   const newSession = await prisma.sessions.create({
     data: {
@@ -303,11 +304,11 @@ export const sessionWorker = new Worker(
           }),
         );
 
-        // Delete the sales count key from Redis after successful session creation
-        const salesKey = `session:sales:${sessionId}`;
-        await connection.del(salesKey);
+        // NOTE: We do NOT delete the old session's Redis sales key here
+        // The sync job will handle syncing those sales to DB and then deleting the key
+        // This ensures no sales data is lost if sync hasn't run yet
         logger.info(
-          `Session created successfully - new_session_id=${result.newSessionId}, deleted sales key: ${salesKey}`,
+          `Session created successfully - new_session_id=${result.newSessionId}, old session ${sessionId} Redis key will be handled by sync job`,
         );
 
         return Promise.resolve({
@@ -464,40 +465,52 @@ export const sessionWorker = new Worker(
               const session = sessionMap.get(sessionId);
 
               if (!session) {
-                // Session doesn't exist in DB, remove Redis key
-                await connection.del(redisKey);
+                // Session doesn't exist in DB - keep the Redis key, might be a timing issue
+                // Don't delete here - let session end handler clean it up
                 logger.warn(
-                  `Session ${sessionId} not found in DB, removed Redis key`,
+                  `Session ${sessionId} not found in DB, but keeping Redis key`,
                 );
                 return;
               }
 
               const currentDbCount = session.current_sales_count || 0;
 
-              // Skip if no sales to sync (already synced)
-              if (redisCount === 0) {
-                await connection.del(redisKey);
+              // Redis contains the TOTAL/cumulative count for the session
+              // DO NOT delete the Redis key - it must stay persistent for the session
+              // Only sync if Redis count is higher than DB (new sales to sync)
+              if (redisCount <= currentDbCount) {
                 logger.debug(
-                  `Session ${sessionId} already synced (redisCount=0), removed Redis key`,
+                  `Session ${sessionId} already in sync (Redis ${redisCount} <= DB ${currentDbCount}), skipping`,
                 );
                 return;
               }
 
-              // Simple: Add Redis count to DB count
-              const newCount = currentDbCount + redisCount;
+              // Redis has the cumulative total, so we just use it directly
+              const newCount = redisCount;
 
-              // Update database
-              await prisma.sessions.update({
-                where: { id: sessionId },
-                data: { current_sales_count: newCount },
-              });
+              try {
+                // Update database
+                await prisma.sessions.update({
+                  where: { id: sessionId },
+                  data: { current_sales_count: newCount },
+                });
 
-              // Remove Redis key after successful update
-              await connection.del(redisKey);
-              updated++;
-              logger.debug(
-                `Updated session ${sessionId}: ${currentDbCount} + ${redisCount} = ${newCount}`,
-              );
+                updated++;
+                logger.debug(
+                  `Updated session ${sessionId}: DB ${currentDbCount} → ${newCount} (Redis total)`,
+                );
+              } catch (updateError) {
+                // DB update failed - don't lose the count, just log error
+                errors++;
+                const errorMessage =
+                  updateError instanceof Error
+                    ? updateError.message
+                    : String(updateError);
+                logger.error(
+                  `Failed to update session ${sessionId}: ${errorMessage}`,
+                  updateError instanceof Error ? updateError.stack : undefined,
+                );
+              }
             } catch (error) {
               errors++;
               const errorMessage =

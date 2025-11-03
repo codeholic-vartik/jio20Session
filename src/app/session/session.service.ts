@@ -166,6 +166,10 @@ export class SessionService {
       },
     });
 
+    // NOTE: We do NOT delete the old session's Redis sales key here
+    // The sync job will handle syncing those sales to DB and then deleting the key
+    // This ensures no sales data is lost if sync hasn't run yet
+
     this.logger.log(
       `Session created successfully: new_session_id=${newSession.id}, suid=${suid}`,
     );
