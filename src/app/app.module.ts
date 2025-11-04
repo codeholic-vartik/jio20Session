@@ -11,6 +11,7 @@ import { MetricsModule } from './metrics/metrics.module';
 import { ObservabilityModule } from '../common/observability/observability.module';
 import { SessionModule } from './session/session.module';
 import { LoggerModule } from '../common/logger/logger.module';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { LoggerModule } from '../common/logger/logger.module';
     DatabaseModule,
     BullmqModule,
     RedisSubscriberModule,
+    AuthModule,
     SocketModule,
     HealthModule,
     MetricsModule,

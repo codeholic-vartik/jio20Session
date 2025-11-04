@@ -4,12 +4,16 @@ import {
   OnModuleInit,
   OnModuleDestroy,
   Inject,
+  forwardRef,
 } from '@nestjs/common';
 import IORedis, { RedisOptions } from 'ioredis';
 import { Queue } from 'bullmq';
 import { SessionService } from '../session/session.service';
+import { SocketGateway } from '../socket/socket.gateway';
 
 const THRESHOLD_REACHED_CHANNEL = 'session:sales:threshold_reached';
+const SALES_UPDATE_CHANNEL = 'session:sales:update';
+const PARTICIPANT_UPDATE_PATTERN = 'session:participant:*';
 
 /**
  * Payload structure for threshold reached events from Redis pub/sub
@@ -22,8 +26,36 @@ interface ThresholdReachedPayload {
 }
 
 /**
- * Service that subscribes to Redis pub/sub channel for threshold reached events.
- * Listens for messages on 'session:sales:threshold_reached' and queues jobs for processing.
+ * Payload structure for participant update events from Redis pub/sub
+ */
+interface ParticipantUpdatePayload {
+  suid: string;
+  participant_count: number;
+  session_profile_id: number;
+  session_id?: number;
+  position?: number;
+  is_winner?: boolean;
+  created_at?: string;
+}
+
+/**
+ * Payload structure for sales update events from Redis pub/sub
+ */
+interface SalesUpdatePayload {
+  session_id: number | string;
+  count: number;
+  session_profile_id: number | string;
+  created_at?: string;
+}
+
+/**
+ * Service that subscribes to Redis pub/sub channels for real-time updates.
+ * Listens for:
+ * - 'session:sales:threshold_reached' - when sales threshold is reached
+ * - 'session:sales:update' - when sales count updates
+ * - 'session:participant:*' - when participant count updates (pattern subscribe)
+ *
+ * Broadcasts updates to connected WebSocket clients via SocketGateway.
  */
 @Injectable()
 export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
@@ -34,6 +66,8 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
     @Inject('BULLMQ_CONNECTION') private readonly redisConnection: IORedis,
     @Inject('SESSION_QUEUE') private readonly sessionQueue: Queue,
     private readonly sessionService: SessionService,
+    @Inject(forwardRef(() => SocketGateway))
+    private readonly socketGateway: SocketGateway,
   ) {
     // Ensure sessionService is properly initialized
     if (!this.sessionService) {
@@ -54,6 +88,8 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     if (this.subscriber) {
       await this.subscriber.unsubscribe(THRESHOLD_REACHED_CHANNEL);
+      await this.subscriber.unsubscribe(SALES_UPDATE_CHANNEL);
+      await this.subscriber.unsubscribe(PARTICIPANT_UPDATE_PATTERN);
       await this.subscriber.quit();
       this.subscriber = null;
     }
@@ -181,6 +217,30 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
                 `Failed to re-subscribe to channel: ${err instanceof Error ? err.message : String(err)}`,
               );
             });
+          this.subscriber
+            ?.subscribe(SALES_UPDATE_CHANNEL)
+            .then(() => {
+              this.logger.log(
+                `Re-subscribed to Redis channel: ${SALES_UPDATE_CHANNEL}`,
+              );
+            })
+            .catch((err) => {
+              this.logger.error(
+                `Failed to re-subscribe to channel: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
+          this.subscriber
+            ?.psubscribe(PARTICIPANT_UPDATE_PATTERN)
+            .then(() => {
+              this.logger.log(
+                `Re-subscribed to Redis pattern: ${PARTICIPANT_UPDATE_PATTERN}`,
+              );
+            })
+            .catch((err) => {
+              this.logger.error(
+                `Failed to re-subscribe to pattern: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            });
         }
       });
 
@@ -232,8 +292,14 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
 
       // Subscribe to the channel (connection is now ready)
       await this.subscriber.subscribe(THRESHOLD_REACHED_CHANNEL);
+      await this.subscriber.subscribe(SALES_UPDATE_CHANNEL);
+      await this.subscriber.psubscribe(PARTICIPANT_UPDATE_PATTERN);
       this.logger.log(
         `Subscribed to Redis channel: ${THRESHOLD_REACHED_CHANNEL}`,
+      );
+      this.logger.log(`Subscribed to Redis channel: ${SALES_UPDATE_CHANNEL}`);
+      this.logger.log(
+        `Subscribed to Redis pattern: ${PARTICIPANT_UPDATE_PATTERN}`,
       );
 
       // Listen for messages
@@ -246,8 +312,19 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
               error instanceof Error ? error.stack : undefined,
             );
           });
+        } else if (channel === SALES_UPDATE_CHANNEL) {
+          this.handleSalesUpdate(message);
         }
       });
+
+      this.subscriber.on(
+        'pmessage',
+        (pattern: string, channel: string, message: string) => {
+          if (pattern === PARTICIPANT_UPDATE_PATTERN) {
+            this.handleParticipantUpdate(message);
+          }
+        },
+      );
 
       // Handle subscription errors
       this.subscriber.on('error', (error: Error) => {
@@ -448,6 +525,193 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       const errorStack = error instanceof Error ? error.stack : undefined;
       this.logger.error(
         `Failed to process threshold reached message: ${errorMessage}`,
+        errorStack,
+      );
+    }
+  }
+
+  /**
+   * Handles incoming sales update messages from Redis pub/sub.
+   * Validates the message format, parses JSON, and broadcasts to WebSocket clients.
+   *
+   * @param message - The raw message string from Redis pub/sub
+   */
+  private handleSalesUpdate(message: string) {
+    try {
+      if (
+        !message ||
+        typeof message !== 'string' ||
+        message.trim().length === 0
+      ) {
+        this.logger.warn(
+          `Received empty or invalid message on channel ${SALES_UPDATE_CHANNEL}`,
+        );
+        return;
+      }
+
+      const trimmedMessage = message.trim();
+      if (!trimmedMessage.startsWith('{') && !trimmedMessage.startsWith('[')) {
+        this.logger.warn(
+          `Received non-JSON message on channel ${SALES_UPDATE_CHANNEL}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`,
+        );
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmedMessage);
+      } catch {
+        this.logger.warn(
+          `Failed to parse JSON message on channel ${SALES_UPDATE_CHANNEL}: "${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`,
+        );
+        return;
+      }
+
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        !('session_profile_id' in parsed) ||
+        !('session_id' in parsed) ||
+        !('count' in parsed)
+      ) {
+        this.logger.warn(
+          `Invalid payload structure for sales update: ${JSON.stringify(Object.keys(parsed || {}))}`,
+        );
+        return;
+      }
+
+      const payload = parsed as SalesUpdatePayload;
+      const sessionId =
+        typeof payload.session_id === 'number'
+          ? payload.session_id
+          : this.parseNumericId(String(payload.session_id), 'sess_');
+      const sessionProfileId =
+        typeof payload.session_profile_id === 'number'
+          ? payload.session_profile_id
+          : this.parseNumericId(String(payload.session_profile_id), 'prod_');
+
+      if (sessionId === null || sessionProfileId === null) {
+        this.logger.warn(
+          `Failed to parse IDs from sales update payload: session_id=${payload.session_id}, session_profile_id=${payload.session_profile_id}`,
+        );
+        return;
+      }
+
+      this.logger.log(
+        `Received sales update event: session_id=${sessionId}, session_profile_id=${sessionProfileId}, count=${payload.count}`,
+      );
+
+      this.socketGateway.broadcastSalesCountUpdate(
+        sessionId,
+        payload.count,
+        sessionProfileId,
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(
+        `Failed to process sales update message: ${errorMessage}`,
+        errorStack,
+      );
+    }
+  }
+
+  /**
+   * Handles incoming participant update messages from Redis pub/sub.
+   * Validates the message format, parses JSON, and broadcasts to WebSocket clients.
+   *
+   * @param message - The raw message string from Redis pub/sub
+   */
+  private handleParticipantUpdate(message: string) {
+    try {
+      if (
+        !message ||
+        typeof message !== 'string' ||
+        message.trim().length === 0
+      ) {
+        this.logger.warn(
+          `Received empty or invalid message on pattern ${PARTICIPANT_UPDATE_PATTERN}`,
+        );
+        return;
+      }
+
+      const trimmedMessage = message.trim();
+      if (!trimmedMessage.startsWith('{') && !trimmedMessage.startsWith('[')) {
+        this.logger.warn(
+          `Received non-JSON message on pattern ${PARTICIPANT_UPDATE_PATTERN}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`,
+        );
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmedMessage);
+      } catch {
+        this.logger.warn(
+          `Failed to parse JSON message on pattern ${PARTICIPANT_UPDATE_PATTERN}: "${message.substring(0, 100)}${message.length > 100 ? '...' : ''}"`,
+        );
+        return;
+      }
+
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        !('session_profile_id' in parsed) ||
+        !('participant_count' in parsed)
+      ) {
+        this.logger.warn(
+          `Invalid payload structure for participant update: ${JSON.stringify(Object.keys(parsed || {}))}`,
+        );
+        return;
+      }
+
+      const payload = parsed as ParticipantUpdatePayload;
+
+      if (!payload.suid) {
+        this.logger.warn(
+          `Missing suid in participant update payload: ${JSON.stringify(payload)}`,
+        );
+        return;
+      }
+
+      const sessionProfileId =
+        typeof payload.session_profile_id === 'number'
+          ? payload.session_profile_id
+          : this.parseNumericId(String(payload.session_profile_id), 'prod_');
+
+      if (sessionProfileId === null) {
+        this.logger.warn(
+          `Failed to parse session_profile_id from participant update payload: session_profile_id=${payload.session_profile_id}`,
+        );
+        return;
+      }
+
+      const sessionId =
+        payload.session_id !== undefined
+          ? typeof payload.session_id === 'number'
+            ? payload.session_id
+            : this.parseNumericId(String(payload.session_id), 'sess_')
+          : null;
+
+      this.logger.log(
+        `Received participant update event: suid=${payload.suid}, session_profile_id=${sessionProfileId}, participant_count=${payload.participant_count}`,
+      );
+
+      this.socketGateway.broadcastParticipantUpdate(
+        payload.suid,
+        payload.participant_count,
+        sessionProfileId,
+        sessionId || undefined,
+        payload.position,
+        payload.is_winner,
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(
+        `Failed to process participant update message: ${errorMessage}`,
         errorStack,
       );
     }

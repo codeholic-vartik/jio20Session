@@ -17,6 +17,14 @@ const envSchema = z.object({
   LOG_DIR: z.string().optional().default('logs'),
   LOG_RETENTION_DAYS: z.string().optional().default('30'),
   WEBSOCKET_NAMESPACE: z.string().optional().default('/ws/v1/session/'),
+  JWT_SECRET_KEY: z
+    .string()
+    .optional()
+    .default('your-super-secret-jwt-key-change-this-in-production'),
+  JWT_REFRESH_SECRET_KEY: z
+    .string()
+    .optional()
+    .default('your-super-secret-refresh-key-change-this-in-production'),
 });
 
 function validateEnv(config: Record<string, unknown>) {

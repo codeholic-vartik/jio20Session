@@ -1,9 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { RedisSubscriberService } from './redis-subscriber.service';
 import { SessionModule } from '../session/session.module';
+import { SocketModule } from '../socket/socket.module';
 
 @Module({
-  imports: [SessionModule],
+  imports: [SessionModule, forwardRef(() => SocketModule)],
   providers: [RedisSubscriberService],
   exports: [RedisSubscriberService],
 })
