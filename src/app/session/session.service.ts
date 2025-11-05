@@ -23,6 +23,7 @@ export class SessionService {
 
   /**
    * Calculates end time based on duration from profile
+   * Supports: seconds, minutes, hours, days, years
    */
   private calculateEndTime(
     startTime: Date,
@@ -35,14 +36,20 @@ export class SessionService {
 
     const endTime = new Date(startTime);
     switch (durationUnit.toLowerCase()) {
-      case 'hours':
-        endTime.setHours(endTime.getHours() + durationValue);
+      case 'seconds':
+        endTime.setSeconds(endTime.getSeconds() + durationValue);
         break;
       case 'minutes':
         endTime.setMinutes(endTime.getMinutes() + durationValue);
         break;
+      case 'hours':
+        endTime.setHours(endTime.getHours() + durationValue);
+        break;
       case 'days':
         endTime.setDate(endTime.getDate() + durationValue);
+        break;
+      case 'years':
+        endTime.setFullYear(endTime.getFullYear() + durationValue);
         break;
       default:
         return null;
@@ -82,6 +89,7 @@ export class SessionService {
     }
 
     // Validate and update existing session if sessionId is provided
+    const currentTime = new Date();
     if (sessionId) {
       const existingSession = await this.prisma.sessions.findUnique({
         where: { id: sessionId },
@@ -98,14 +106,19 @@ export class SessionService {
         );
       }
 
-      // Update session status from UPCOMING to OPENING if applicable
+      // Update previous session: set start_time to current time and change status from UPCOMING to OPENING
       if (existingSession.status === SessionStatus.UPCOMING.valueOf()) {
         await this.prisma.sessions.update({
           where: { id: sessionId },
-          data: { status: SessionStatus.OPENING },
+          data: {
+            status: SessionStatus.OPENING,
+            start_time: currentTime,
+            start_trigger_type: sessionProfile.session_duration_unit,
+            start_trigger_value: sessionProfile.session_duration_value,
+          },
         });
         this.logger.log(
-          `Updated session ${sessionId} status to OPENING for profile ${sessionProfileId}`,
+          `Updated session ${sessionId} status to OPENING and set start_time to current time for profile ${sessionProfileId}`,
         );
       }
     }
@@ -121,13 +134,13 @@ export class SessionService {
       throw new Error('Maximum sessions limit reached for this profile');
     }
 
-    // Calculate start and end times
-    const startTime = new Date();
-    const endTime = this.calculateEndTime(
-      startTime,
-      sessionProfile.session_duration_value,
-      sessionProfile.session_duration_unit,
-    );
+    // Calculate start and end times for new session based on profile duration
+    // const startTime = new Date();
+    // const endTime = this.calculateEndTime(
+    //   startTime,
+    //   sessionProfile.session_duration_value,
+    //   sessionProfile.session_duration_unit,
+    // );
 
     // Generate unique session ID
     const suid = generateUid('ssn_');
@@ -144,8 +157,6 @@ export class SessionService {
         suid,
         session_profile_id: sessionProfileId,
         name: sessionName,
-        start_time: startTime,
-        end_time: endTime,
         status: SessionStatus.UPCOMING,
         priority_position: sessionProfile.priority_position,
         is_active: true,
