@@ -9,7 +9,7 @@ import {
 import { Queue } from 'bullmq';
 import IORedis, { RedisOptions } from 'ioredis';
 // Import worker to ensure it starts processing jobs
-import './workers/session.worker';
+import './workers/session/session.worker';
 
 /**
  * Helper function to determine if TLS should be used
