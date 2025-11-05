@@ -167,56 +167,57 @@ const START_LIVE_JOB_OPTIONS = {
 } as const;
 
 /**
- * Validates duration configuration and calculates delay
- */
-function validateAndCalculateDelay(
-  sessionId: number,
-  durationValue: number | null,
-  durationUnit: string | null,
-): number | null {
-  const delayMs = calculateDelayMs(durationValue, durationUnit);
-
-  if (delayMs === null) {
-    logger.warn(
-      `Cannot schedule start-live job for session ${sessionId}: invalid duration (value: ${durationValue}, unit: ${durationUnit})`,
-    );
-    return null;
-  }
-
-  return delayMs;
-}
-
-/**
- * Schedules a delayed job to transition session from OPENING to LIVE
+ * Schedules a job to transition session from OPENING to LIVE at exact time
+ * Calculates exact time as: start_time + duration
+ *
+ * @param sessionId - Session ID to transition
+ * @param startTime - Session start_time (preserve scheduled time)
+ * @param durationValue - Duration value from profile
+ * @param durationUnit - Duration unit from profile
+ * @param sessionQueue - Queue instance for scheduling
  */
 export async function scheduleStartLiveJob(
   sessionId: number,
+  startTime: Date | null,
   durationValue: number | null,
   durationUnit: string | null,
   sessionQueue: Queue,
 ): Promise<void> {
-  const delayMs = validateAndCalculateDelay(
-    sessionId,
+  // Calculate exact time when session should go LIVE: start_time + duration
+  const expectedLiveTime = calculateExpectedLiveTime(
+    startTime,
     durationValue,
     durationUnit,
   );
 
-  if (delayMs === null) {
+  if (!expectedLiveTime) {
+    logger.warn(
+      `Cannot schedule start-live job for session ${sessionId}: invalid start_time or duration configuration`,
+    );
     return;
   }
+
+  const now = new Date();
+  // Calculate delay from now to expected live time
+  // If expected time is in the past, schedule immediately (0 delay)
+  const delayMs = Math.max(0, expectedLiveTime.getTime() - now.getTime());
+
+  // Use unique job ID to prevent duplicate jobs
+  const jobId = `start-live-${sessionId}`;
 
   try {
     await sessionQueue.add(
       'start-live',
       { sessionId },
       {
+        jobId,
         delay: delayMs,
         ...START_LIVE_JOB_OPTIONS,
       },
     );
 
     logger.info(
-      `Scheduled start-live job for session ${sessionId} with delay ${delayMs}ms (${durationValue} ${durationUnit})`,
+      `Scheduled start-live job for session ${sessionId} at exact time ${expectedLiveTime.toISOString()} (delay: ${delayMs}ms, duration: ${durationValue} ${durationUnit})`,
     );
   } catch (scheduleError) {
     const errorMessage =
@@ -244,20 +245,30 @@ function calculateExpectedLiveTime(
   }
 
   const expectedTime = new Date(startTime);
-  const unit = durationUnit.toLowerCase();
+  // Normalize unit: handle both singular and plural, case-insensitive
+  const unit = durationUnit.toLowerCase().trim();
 
+  // Handle both singular and plural forms
   switch (unit) {
     case 'minutes':
+    case 'minute':
       expectedTime.setMinutes(expectedTime.getMinutes() + durationValue);
       break;
     case 'hours':
+    case 'hour':
       expectedTime.setHours(expectedTime.getHours() + durationValue);
       break;
     case 'days':
+    case 'day':
       expectedTime.setDate(expectedTime.getDate() + durationValue);
       break;
     case 'years':
+    case 'year':
       expectedTime.setFullYear(expectedTime.getFullYear() + durationValue);
+      break;
+    case 'seconds':
+    case 'second':
+      expectedTime.setSeconds(expectedTime.getSeconds() + durationValue);
       break;
     default:
       return null;

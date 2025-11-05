@@ -4,6 +4,8 @@ import { generateUid } from '../../common/utils/uuid.util';
 import { generateSessionName } from '../../common/utils/session.util';
 import { SessionStatus } from '../../common/types/enums';
 import IORedis from 'ioredis';
+import { Queue } from 'bullmq';
+import { scheduleStartLiveJob } from '../jobs/workers/session-transition.helper';
 
 @Injectable()
 export class SessionService {
@@ -12,6 +14,7 @@ export class SessionService {
   constructor(
     private readonly prisma: DatabaseService,
     @Inject('BULLMQ_CONNECTION') private readonly redis: IORedis,
+    @Inject('SESSION_QUEUE') private readonly sessionQueue: Queue,
   ) {}
 
   async getActiveSessions() {
@@ -108,18 +111,51 @@ export class SessionService {
 
       // Update previous session: set start_time to current time and change status from UPCOMING to OPENING
       if (existingSession.status === SessionStatus.UPCOMING.valueOf()) {
-        await this.prisma.sessions.update({
+        // Update session with start_time and trigger values
+        const updatedSession = await this.prisma.sessions.update({
           where: { id: sessionId },
           data: {
             status: SessionStatus.OPENING,
-            start_time: currentTime,
+            start_time: currentTime, // Store UTC timestamp (timezone-aware)
             start_trigger_type: sessionProfile.session_duration_unit,
             start_trigger_value: sessionProfile.session_duration_value,
           },
+          select: {
+            id: true,
+            start_time: true,
+            start_trigger_type: true,
+            start_trigger_value: true,
+          },
         });
+
         this.logger.log(
-          `Updated session ${sessionId} status to OPENING and set start_time to current time for profile ${sessionProfileId}`,
+          `Updated session ${sessionId} status to OPENING and set start_time to ${updatedSession.start_time?.toISOString()} for profile ${sessionProfileId}`,
         );
+
+        // Schedule start-live job at exact time: start_time + duration
+        // Use the session's stored start_time and start_trigger_type/value from database
+        // This ensures proper timezone handling - database stores UTC timestamps
+        try {
+          await scheduleStartLiveJob(
+            sessionId,
+            updatedSession.start_time, // Use stored start_time (UTC, timezone-aware)
+            updatedSession.start_trigger_value, // Use stored start_trigger_value
+            updatedSession.start_trigger_type, // Use stored start_trigger_type
+            this.sessionQueue,
+          );
+          this.logger.log(
+            `Scheduled start-live job for session ${sessionId} using stored start_time=${updatedSession.start_time?.toISOString()}, duration=${updatedSession.start_trigger_value} ${updatedSession.start_trigger_type}`,
+          );
+        } catch (scheduleError) {
+          // Log error but don't fail the session update
+          const errorMessage =
+            scheduleError instanceof Error
+              ? scheduleError.message
+              : String(scheduleError);
+          this.logger.warn(
+            `Failed to schedule start-live job for session ${sessionId}: ${errorMessage}`,
+          );
+        }
       }
     }
 

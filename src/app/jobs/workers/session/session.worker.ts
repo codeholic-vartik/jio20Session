@@ -2,10 +2,11 @@
  * @fileoverview Main session worker coordinator
  * @description BullMQ worker that processes session-related background jobs
  *
- * This worker handles three types of jobs:
+ * This worker handles these types of jobs:
  * - rotate-session: Session rotation/transition
  * - threshold-reached: Create new session when threshold is reached
  * - sync-sales: Sync sales counts from Redis to database
+ * - start-live: Transition OPENING to LIVE at exact time (start_time + duration)
  *
  * The worker automatically starts when this module is imported (via bullmq.module.ts)
  */
@@ -15,6 +16,7 @@ import { createRedisConnection } from './config/redis.config';
 import { handleRotateSession } from './handlers/rotate-session.handler';
 import { handleThresholdReached } from './handlers/threshold-reached.handler';
 import { handleSyncSales } from './handlers/sync-sales.handler';
+import { handleStartLive } from './handlers/start-live.handler';
 
 // Create Redis connection for worker
 const connection = createRedisConnection();
@@ -50,6 +52,7 @@ const connection = createRedisConnection();
  * - 'rotate-session': Routes to handleRotateSession
  * - 'threshold-reached': Routes to handleThresholdReached
  * - 'sync-sales': Routes to handleSyncSales
+ * - 'start-live': Routes to handleStartLive (transitions OPENING to LIVE at exact time)
  * - Unknown types: Returns { ok: true }
  */
 export const sessionWorker = new Worker(
@@ -66,6 +69,10 @@ export const sessionWorker = new Worker(
 
     if (job.name === 'sync-sales') {
       return handleSyncSales(job, connection);
+    }
+
+    if (job.name === 'start-live') {
+      return handleStartLive(job);
     }
 
     // Default response for unknown job types
