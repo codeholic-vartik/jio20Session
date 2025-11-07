@@ -10,12 +10,14 @@ import {
   createStandaloneLogger,
   StandaloneLogger,
 } from '../../../../../common/logger/logger.util';
+import { SessionStatus } from '../../../../../common/types/enums/session-status.enum';
+import { getSyncSalesBatchSize } from '../config/sync-sales.config';
 
 const logger: StandaloneLogger = createStandaloneLogger('SyncSalesHandler');
 const prisma = new PrismaClient();
 
 /** Batch size for processing Redis keys and database updates */
-const BATCH_SIZE = 50;
+const BATCH_SIZE = getSyncSalesBatchSize();
 
 /**
  * Handles sync-sales job
@@ -27,11 +29,12 @@ const BATCH_SIZE = 50;
  * 3. Updates `current_sales_count` if Redis value is higher
  * 4. Processes in batches for performance
  * 5. Only syncs if Redis count > DB count (avoids overwriting with stale data)
+ * 6. Cleans up Redis keys for sessions missing from DB or already completed
  *
  * @important
- * - Does NOT delete Redis keys (they persist for session lifetime)
+ * - Leaves Redis keys for active sessions; removes stale/completed session keys
  * - Only updates if Redis count is higher than DB count
- * - Handles missing sessions gracefully (keeps Redis key)
+ * - Handles missing sessions gracefully by cleaning up Redis
  * - Processes in batches of 50 for performance
  *
  * @param {Job} job - BullMQ job instance
@@ -149,6 +152,7 @@ export async function handleSyncSales(
       select: {
         id: true,
         current_sales_count: true,
+        status: true,
       },
     });
 
@@ -166,6 +170,23 @@ export async function handleSyncSales(
         const redisCount = sessionDataMap.get(sessionId) || 0;
         const redisKey = `session:sales:${sessionId}`;
 
+        const removeRedisKey = async (reason: string) => {
+          try {
+            await connection.del(redisKey);
+            logger.warn(`Removed Redis key ${redisKey} - ${reason}`);
+          } catch (deleteError) {
+            errors++;
+            const deleteMessage =
+              deleteError instanceof Error
+                ? deleteError.message
+                : String(deleteError);
+            logger.error(
+              `Failed to delete Redis key ${redisKey}: ${deleteMessage}`,
+              deleteError instanceof Error ? deleteError.stack : undefined,
+            );
+          }
+        };
+
         try {
           // Check if Redis key still exists (might be deleted during session creation)
           const keyExists = await connection.exists(redisKey);
@@ -177,10 +198,14 @@ export async function handleSyncSales(
           const session = sessionMap.get(sessionId);
 
           if (!session) {
-            // Session doesn't exist in DB - keep the Redis key, might be a timing issue
-            // Don't delete here - let session end handler clean it up
-            logger.warn(
-              `Session ${sessionId} not found in DB, but keeping Redis key`,
+            await removeRedisKey(`session ${sessionId} not found in DB`);
+            return;
+          }
+
+          const sessionStatus = session.status as SessionStatus | null;
+          if (sessionStatus === SessionStatus.COMPLETED) {
+            await removeRedisKey(
+              `session ${sessionId} is ${SessionStatus.COMPLETED} in DB`,
             );
             return;
           }

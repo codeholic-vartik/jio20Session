@@ -25,6 +25,20 @@ const envSchema = z.object({
     .string()
     .optional()
     .default('your-super-secret-refresh-key-change-this-in-production'),
+  SESSION_SYNC_SALES_BATCH_SIZE: z
+    .string()
+    .optional()
+    .refine(
+      (value) =>
+        !value ||
+        (/^\d+$/.test(value) &&
+          Number.parseInt(value, 10) > 0 &&
+          Number.parseInt(value, 10) <= 1000),
+      {
+        message:
+          'SESSION_SYNC_SALES_BATCH_SIZE must be a positive integer less than or equal to 1000',
+      },
+    ),
 });
 
 function validateEnv(config: Record<string, unknown>) {
