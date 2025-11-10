@@ -8,8 +8,9 @@ import {
 } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import IORedis, { RedisOptions } from 'ioredis';
+import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 // Import worker to ensure it starts processing jobs
-import './workers/session.worker';
+import './workers/session/session.worker';
 
 /**
  * Helper function to determine if TLS should be used
@@ -99,10 +100,9 @@ async function checkEvictionPolicy(client: IORedis): Promise<void> {
     {
       provide: 'BULLMQ_CONNECTION',
       useFactory: async (): Promise<IORedis> => {
-        const url =
-          process.env.REDIS_BULLMQ_URL ||
-          process.env.REDIS_URL ||
-          'redis://127.0.0.1:6379';
+        const url = normalizeRedisUrl(
+          process.env.REDIS_BULLMQ_URL || process.env.REDIS_URL || undefined,
+        );
 
         const wantsTls = shouldUseTls(url);
         const rejectUnauthorized =
