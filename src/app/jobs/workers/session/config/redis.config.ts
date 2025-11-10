@@ -9,6 +9,7 @@ import {
   createStandaloneLogger,
   StandaloneLogger,
 } from '../../../../../common/logger/logger.util';
+import { normalizeRedisUrl } from '../../../../../common/utils/redis-url.util';
 
 const logger: StandaloneLogger = createStandaloneLogger('SessionWorkerRedis');
 
@@ -37,10 +38,9 @@ const logger: StandaloneLogger = createStandaloneLogger('SessionWorkerRedis');
  * - Defaults to: redis://localhost:6379
  */
 export function createRedisConnection(): IORedis {
-  const redisUrl =
-    process.env.REDIS_BULLMQ_URL ||
-    process.env.REDIS_URL ||
-    'redis://localhost:6379';
+  const redisUrl = normalizeRedisUrl(
+    process.env.REDIS_BULLMQ_URL || process.env.REDIS_URL || undefined,
+  );
 
   const connection = new IORedis(redisUrl, {
     maxRetriesPerRequest: null, // Required by BullMQ for blocking commands

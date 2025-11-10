@@ -10,6 +10,7 @@ import IORedis, { RedisOptions } from 'ioredis';
 import { Queue } from 'bullmq';
 import { SessionService } from '../session/session.service';
 import { SocketGateway } from '../socket/socket.gateway';
+import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 
 const THRESHOLD_REACHED_CHANNEL = 'session:sales:threshold_reached';
 const SALES_UPDATE_CHANNEL = 'session:sales:update';
@@ -103,10 +104,9 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
   private async connectAndSubscribe() {
     try {
       // Create a dedicated subscriber client (Redis requires separate connection for pub/sub)
-      const redisUrl =
-        process.env.REDIS_BULLMQ_URL ||
-        process.env.REDIS_URL ||
-        'redis://127.0.0.1:6379';
+      const redisUrl = normalizeRedisUrl(
+        process.env.REDIS_BULLMQ_URL || process.env.REDIS_URL || undefined,
+      );
 
       // Reuse the same connection logic as BullmqModule
       const tlsFlag = (process.env.REDIS_TLS || '').toLowerCase();

@@ -7,6 +7,7 @@ import {
   createStandaloneLogger,
   StandaloneLogger,
 } from '../../common/logger/logger.util';
+import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 
 const logger: StandaloneLogger = createStandaloneLogger('RedisIoAdapter');
 
@@ -14,11 +15,14 @@ export class RedisIoAdapter extends IoAdapter {
   private pubClient: Redis | null = null;
   private subClient: Redis | null = null;
 
+  private redisUrl: string;
+
   constructor(
     private app: INestApplicationContext,
-    private redisUrl: string,
+    redisUrl: string,
   ) {
     super(app);
+    this.redisUrl = normalizeRedisUrl(redisUrl);
   }
 
   async connectToRedis(): Promise<void> {

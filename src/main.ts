@@ -13,6 +13,7 @@ import { RedisIoAdapter } from './app/socket/redis-io.adapter';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AsyncApiDocumentBuilder, AsyncApiModule } from 'nestjs-asyncapi';
 import { createStandaloneLogger } from './common/logger/logger.util';
+import { normalizeRedisUrl } from './common/utils/redis-url.util';
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
 // Use NestJS built-in Logger for development, Winston for production
@@ -38,7 +39,9 @@ async function bootstrap() {
   );
   await app.register(fastifyHelmet);
   await app.register(fastifyCors, { origin: true, credentials: true });
-  const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+  const redisUrl = normalizeRedisUrl(
+    process.env.REDIS_URL || process.env.REDIS_BULLMQ_URL || undefined,
+  );
   const redisIoAdapter = new RedisIoAdapter(app, redisUrl);
   await redisIoAdapter.connectToRedis();
   app.useWebSocketAdapter(redisIoAdapter);
