@@ -11,6 +11,7 @@ import { Queue } from 'bullmq';
 import { SessionService } from '../session/session.service';
 import { SocketGateway } from '../socket/socket.gateway';
 import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
+import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
 
 const THRESHOLD_REACHED_CHANNEL = 'session:sales:threshold_reached';
 const SALES_UPDATE_CHANNEL = 'session:sales:update';
@@ -129,25 +130,9 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       const rejectUnauthorized =
         process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false';
 
-      let dbIndex: number | undefined = undefined;
-      const envDb = process.env.REDIS_DB;
-      if (envDb && /^\d+$/.test(envDb)) dbIndex = Number(envDb);
-      if (dbIndex === undefined) {
-        try {
-          const u = new URL(redisUrl);
-          const pathDb =
-            u.pathname && u.pathname.length > 1
-              ? Number(u.pathname.slice(1))
-              : NaN;
-          if (!Number.isNaN(pathDb)) dbIndex = pathDb;
-          const qpDb = u.searchParams.get('db');
-          if (dbIndex === undefined && qpDb && /^\d+$/.test(qpDb))
-            dbIndex = Number(qpDb);
-        } catch {
-          // URL parsing failed, continue with default
-        }
-      }
-      if (dbIndex === undefined) dbIndex = 0;
+      const dbIndex = resolveRedisDbIndex(redisUrl, {
+        envNames: ['REDIS_BULLMQ_DB', 'REDIS_DB'],
+      });
 
       const options: RedisOptions = {
         ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),

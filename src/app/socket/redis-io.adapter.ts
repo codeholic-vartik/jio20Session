@@ -8,6 +8,7 @@ import {
   StandaloneLogger,
 } from '../../common/logger/logger.util';
 import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
+import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
 
 const logger: StandaloneLogger = createStandaloneLogger('RedisIoAdapter');
 
@@ -46,25 +47,7 @@ export class RedisIoAdapter extends IoAdapter {
     const rejectUnauthorized =
       process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false';
     // Determine DB index: env overrides URL; default 0
-    let dbIndex: number | undefined = undefined;
-    const envDb = process.env.REDIS_DB;
-    if (envDb && /^\d+$/.test(envDb)) dbIndex = Number(envDb);
-    if (dbIndex === undefined) {
-      try {
-        const u = new URL(this.redisUrl);
-        const pathDb =
-          u.pathname && u.pathname.length > 1
-            ? Number(u.pathname.slice(1))
-            : NaN;
-        if (!Number.isNaN(pathDb)) dbIndex = pathDb;
-        const qpDb = u.searchParams.get('db');
-        if (dbIndex === undefined && qpDb && /^\d+$/.test(qpDb))
-          dbIndex = Number(qpDb);
-      } catch {
-        // URL parsing failed, continue with default
-      }
-    }
-    if (dbIndex === undefined) dbIndex = 0;
+    const dbIndex = resolveRedisDbIndex(this.redisUrl);
     const redisOptions: RedisOptions = {
       ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),
       db: dbIndex,
