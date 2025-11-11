@@ -35,3 +35,37 @@ Use this guide to deploy the service on a host without Docker, managed by `pm2`.
    ```
 
 Keep Postgres and Redis running independently (managed service or system packages). Update connection strings to match your environment before starting the service.
+
+## GitHub Actions Workflow
+
+The repository provides `.github/workflows/deploy.yml` to automate PM2 deployments after lint and build checks succeed.
+
+### Prerequisites
+
+- The target server must have:
+  - Git, Node.js (>=20), npm (>=10), and PM2 installed.
+  - The repository cloned at the desired location (for example `/var/www/jio20-session`).
+  - Environment variables configured (via `.env` or system service) for database and Redis connections.
+- Configure SSH access for GitHub Actions using a deploy key or dedicated user.
+
+### Required Secrets
+
+Set the following repository secrets in GitHub:
+
+- `SSH_HOST` – Hostname or IP of the deployment server.
+- `SSH_PORT` – (optional) SSH port, defaults to `22`.
+- `SSH_USER` – SSH username with permissions to manage the app.
+- `SSH_KEY` – Private key (PEM) for the deployment user.
+- `APP_DIR` – Absolute path to the project directory on the server (matches the clone location).
+- `PM2_APP_NAME` – PM2 process name, for example `jio20-session`.
+
+### How It Works
+
+On pushes to `main` (or manual dispatch), the workflow:
+
+1. Checks out the repository.
+2. Installs dependencies with `npm ci`.
+3. Runs `npm run lint` and `npm run build`.
+4. Connects over SSH and executes `scripts/remote-deploy.sh` on the server.
+
+The remote script fetches the latest code, installs production dependencies, rebuilds the project, and either reloads or starts the PM2 process.

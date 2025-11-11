@@ -71,6 +71,11 @@ npm run lint
 npm run format
 ```
 
+## CI/CD
+
+- GitHub Actions workflow `Lint and Deploy` runs on pushes to `main`.
+- The workflow lints, builds, and deploys to the PM2 host via SSH (see `docs/DEPLOYMENT_PM2.md` for configuration).
+
 ## Developer
 
 - Author: Vartik Anand
