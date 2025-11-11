@@ -12,24 +12,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------------
+      # 1️⃣ Checkout code
+      # -------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # -------------------------------
+      # 2️⃣ Use Node.js 20 for build
+      # -------------------------------
       - name: Use Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
+      # -------------------------------
+      # 3️⃣ Install dependencies
+      # -------------------------------
       - name: Install dependencies
         run: npm ci
 
+      # -------------------------------
+      # 4️⃣ Lint code
+      # -------------------------------
       - name: Run lint
         run: npm run lint
 
+      # -------------------------------
+      # 5️⃣ Build app
+      # -------------------------------
       - name: Build project
         run: npm run build
 
+      # -------------------------------
+      # 6️⃣ Deploy build to server
+      # -------------------------------
       - name: Deploy to server
         if: success()
         uses: appleboy/ssh-action@v1.0.0
@@ -39,7 +57,35 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
-            export APP_DIR="${{ secrets.APP_DIR }}"
-            export APP_BRANCH="${{ github.ref_name }}"
-            export PM2_APP_NAME="${{ secrets.PM2_APP_NAME }}"
-            bash "$APP_DIR/scripts/remote-deploy.sh"
+            echo "🚀 Starting deploy on server..."
+            APP_DIR="${{ secrets.APP_DIR }}"
+            PM2_APP_NAME="${{ secrets.PM2_APP_NAME }}"
+            echo "→ Updating repo at $APP_DIR"
+
+            # Navigate to app directory
+            cd $APP_DIR
+
+            # Pull latest code
+            git fetch origin develop && git reset --hard origin/develop
+
+            # Ensure correct Node version (Node 20+)
+            if ! command -v node &> /dev/null; then
+              echo "Installing Node.js 20..."
+              curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+              apt-get install -y nodejs
+            fi
+
+            # Install dependencies & build
+            npm ci --omit=dev
+            npm run build
+
+            # Restart PM2 app
+            if pm2 list | grep -q "$PM2_APP_NAME"; then
+              echo "Restarting PM2 app: $PM2_APP_NAME"
+              pm2 restart $PM2_APP_NAME
+            else
+              echo "Starting PM2 app: $PM2_APP_NAME"
+              pm2 start dist/main.js --name $PM2_APP_NAME
+            fi
+
+            echo "✅ Deploy completed successfully!"
