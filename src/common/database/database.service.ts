@@ -7,11 +7,9 @@ export class DatabaseService extends PrismaClient implements OnModuleInit {
     await this.$connect();
   }
 
-  async enableShutdownHooks(app: INestApplication) {
-    process.on('beforeExit', async () => {
-      await app.close();
+  enableShutdownHooks(app: INestApplication): void {
+    process.on('beforeExit', () => {
+      void app.close();
     });
   }
 }
-
-

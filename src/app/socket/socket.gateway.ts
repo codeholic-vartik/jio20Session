@@ -194,8 +194,8 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client: AuthenticatedSocket,
     userInfo: AuthenticatedUser,
   ): void {
-    client.join(`user:${userInfo.userId}`);
-    client.join(`user:${userInfo.userUuid}`);
+    void client.join(`user:${userInfo.userId}`);
+    void client.join(`user:${userInfo.userUuid}`);
   }
 
   /**

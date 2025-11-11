@@ -11,5 +11,3 @@ export class MetricsController {
     return await register.metrics();
   }
 }
-
-
