@@ -26,6 +26,8 @@ npm run start:dev
 npm run build && npm run start:prod
 ```
 
+For hosting with `pm2`, follow `docs/DEPLOYMENT_PM2.md`.
+
 ## Configuration
 
 Set the following environment variables (see `src/common/config/config.module.ts` for validation):

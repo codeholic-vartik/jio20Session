@@ -9,6 +9,7 @@ import {
 import { Queue } from 'bullmq';
 import IORedis, { RedisOptions } from 'ioredis';
 import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
+import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
 // Import worker to ensure it starts processing jobs
 import './workers/session/session.worker';
 
@@ -35,38 +36,6 @@ function shouldUseTls(url: string): boolean {
   }
 
   return false;
-}
-
-/**
- * Helper function to extract database index from URL or env
- */
-function getDbIndex(url: string): number {
-  // Check env variable first
-  const envDb = process.env.REDIS_DB;
-  if (envDb && /^\d+$/.test(envDb)) {
-    return Number(envDb);
-  }
-
-  // Try to extract from URL
-  try {
-    const parsedUrl = new URL(url);
-
-    // Check path (e.g., redis://host:port/1)
-    if (parsedUrl.pathname && parsedUrl.pathname.length > 1) {
-      const pathDb = Number(parsedUrl.pathname.slice(1));
-      if (!Number.isNaN(pathDb)) return pathDb;
-    }
-
-    // Check query param (e.g., redis://host:port?db=1)
-    const qpDb = parsedUrl.searchParams.get('db');
-    if (qpDb && /^\d+$/.test(qpDb)) {
-      return Number(qpDb);
-    }
-  } catch {
-    // Invalid URL, use default
-  }
-
-  return 0; // Default database
 }
 
 /**
@@ -107,7 +76,9 @@ async function checkEvictionPolicy(client: IORedis): Promise<void> {
         const wantsTls = shouldUseTls(url);
         const rejectUnauthorized =
           process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false';
-        const dbIndex = getDbIndex(url);
+        const dbIndex = resolveRedisDbIndex(url, {
+          envNames: ['REDIS_BULLMQ_DB', 'REDIS_DB'],
+        });
 
         const options: RedisOptions = {
           ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),

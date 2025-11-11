@@ -10,6 +10,32 @@ const envSchema = z.object({
   DATABASE_URL: z.string(),
   REDIS_URL: z.string(),
   REDIS_BULLMQ_URL: z.string().optional(),
+  REDIS_DB: z
+    .string()
+    .optional()
+    .default('0')
+    .refine(
+      (value) =>
+        /^\d+$/.test(value) &&
+        Number.parseInt(value, 10) >= 0 &&
+        Number.parseInt(value, 10) <= 15,
+      {
+        message: 'REDIS_DB must be an integer between 0 and 15',
+      },
+    ),
+  REDIS_BULLMQ_DB: z
+    .string()
+    .optional()
+    .refine(
+      (value) =>
+        !value ||
+        (/^\d+$/.test(value) &&
+          Number.parseInt(value, 10) >= 0 &&
+          Number.parseInt(value, 10) <= 15),
+      {
+        message: 'REDIS_BULLMQ_DB must be an integer between 0 and 15',
+      },
+    ),
   SENTRY_DSN: z.string().optional(),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])

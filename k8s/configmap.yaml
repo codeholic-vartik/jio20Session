@@ -5,5 +5,5 @@ metadata:
 data:
   REDIS_URL: redis://redis:6379
   REDIS_BULLMQ_URL: redis://redis-bull:6379
-
-
+  REDIS_DB: '0'
+  REDIS_BULLMQ_DB: '1'
