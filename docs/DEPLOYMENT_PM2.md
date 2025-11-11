@@ -58,6 +58,7 @@ Set the following repository secrets in GitHub:
 - `SSH_KEY` – Private key (PEM) for the deployment user.
 - `APP_DIR` – Absolute path to the project directory on the server (matches the clone location).
 - `PM2_APP_NAME` – PM2 process name, for example `jio20-session`.
+- `REPO_URL` – Repository clone URL (used if the workflow needs to bootstrap the checkout).
 
 ### How It Works
 
@@ -66,6 +67,8 @@ On pushes to `main` (or manual dispatch), the workflow:
 1. Checks out the repository.
 2. Installs dependencies with `npm ci`.
 3. Runs `npm run lint` and `npm run build`.
-4. Connects over SSH and executes `scripts/remote-deploy.sh` on the server.
-
-The remote script fetches the latest code, installs production dependencies, rebuilds the project, and either reloads or starts the PM2 process.
+4. Connects over SSH and runs the deploy commands inline:
+   - Optionally bootstraps the repository on the server using `REPO_URL` if the folder does not exist.
+   - Fetches the latest commit for the branch that triggered the workflow.
+   - Installs production dependencies, builds the application, and reloads or starts the PM2 process.
+   - Starts the process with `pm2 start npm --name <PM2_APP_NAME> -- run start` if it is not already running, otherwise restarts the existing process.
