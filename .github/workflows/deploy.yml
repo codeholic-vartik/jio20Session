@@ -85,7 +85,7 @@ jobs:
               pm2 restart $PM2_APP_NAME
             else
               echo "Starting PM2 app: $PM2_APP_NAME"
-              pm2 start dist/main.js --name $PM2_APP_NAME
+              pm2 start "npm run start" --name $PM2_APP_NAME
             fi
 
             echo "✅ Deploy completed successfully!"
