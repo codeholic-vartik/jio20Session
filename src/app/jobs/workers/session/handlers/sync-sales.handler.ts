@@ -251,30 +251,101 @@ export async function handleSyncSales(
               ? session.current_sales_count
               : 0;
 
+          // Log detailed comparison for debugging
+          logger.info(
+            `Session ${sessionId} comparison: Redis=${latestRedisCount}, DB=${currentDbCount} (raw: ${session.current_sales_count}), status=${session.status}`,
+          );
+
           // Redis contains the TOTAL/cumulative count for the session
           // DO NOT delete the Redis key - it must stay persistent for the session
-          // Only sync if Redis count is higher than DB (new sales to sync)
-          if (latestRedisCount <= currentDbCount) {
+          // Sync if Redis count is different from DB (handles both higher and edge cases)
+          if (latestRedisCount === currentDbCount) {
             logger.debug(
-              `Session ${sessionId} already in sync (Redis ${latestRedisCount} <= DB ${currentDbCount}), skipping`,
+              `Session ${sessionId} already in sync (Redis ${latestRedisCount} === DB ${currentDbCount}), skipping update`,
             );
             return;
+          }
+
+          // If Redis is less than DB, log a warning but still update (Redis is source of truth)
+          if (latestRedisCount < currentDbCount) {
+            logger.warn(
+              `Session ${sessionId} Redis count (${latestRedisCount}) is LESS than DB count (${currentDbCount}). This is unusual. Updating DB to match Redis (Redis is source of truth).`,
+            );
           }
 
           // Redis has the cumulative total, so we just use it directly
           const newCount = latestRedisCount;
 
           try {
-            // Update database
-            await prisma.sessions.update({
+            // Update database - always update when Redis != DB
+            logger.info(
+              `Updating session ${sessionId}: DB ${currentDbCount} → ${newCount} (Redis total, diff: ${newCount > currentDbCount ? '+' : ''}${newCount - currentDbCount})`,
+            );
+
+            // Use updateMany for more reliable updates, or update with explicit timestamp
+            const updateResult = await prisma.sessions.update({
               where: { id: sessionId },
-              data: { current_sales_count: newCount },
+              data: {
+                current_sales_count: newCount,
+                updated_at: new Date(), // Explicitly update timestamp
+              },
             });
 
-            updated++;
-            logger.info(
-              `Updated session ${sessionId}: DB ${currentDbCount} → ${newCount} (Redis total, diff: +${newCount - currentDbCount})`,
-            );
+            // Verify the update succeeded by reading back from DB
+            const verifySession = await prisma.sessions.findUnique({
+              where: { id: sessionId },
+              select: { current_sales_count: true },
+            });
+
+            if (
+              verifySession &&
+              verifySession.current_sales_count === newCount
+            ) {
+              updated++;
+              logger.info(
+                `✓ Successfully updated session ${sessionId}: DB ${currentDbCount} → ${newCount} (verified: ${verifySession.current_sales_count})`,
+              );
+            } else {
+              errors++;
+              const actualValue = verifySession?.current_sales_count ?? 'null';
+              logger.error(
+                `✗ Update verification failed for session ${sessionId}: Expected ${newCount}, but DB shows ${actualValue}. Update result was: ${updateResult.current_sales_count}`,
+              );
+
+              // Retry once if verification failed
+              logger.info(`Retrying update for session ${sessionId}...`);
+              try {
+                await prisma.sessions.update({
+                  where: { id: sessionId },
+                  data: {
+                    current_sales_count: newCount,
+                    updated_at: new Date(),
+                  },
+                });
+                const retryVerify = await prisma.sessions.findUnique({
+                  where: { id: sessionId },
+                  select: { current_sales_count: true },
+                });
+                if (
+                  retryVerify &&
+                  retryVerify.current_sales_count === newCount
+                ) {
+                  updated++;
+                  errors--; // Remove from errors since retry succeeded
+                  logger.info(
+                    `✓ Retry successful for session ${sessionId}: DB now shows ${retryVerify.current_sales_count}`,
+                  );
+                } else {
+                  logger.error(
+                    `✗ Retry also failed for session ${sessionId}: DB still shows ${retryVerify?.current_sales_count ?? 'null'}`,
+                  );
+                }
+              } catch (retryError) {
+                logger.error(
+                  `Retry update failed for session ${sessionId}: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
+                );
+              }
+            }
           } catch (updateError) {
             // DB update failed - don't lose the count, just log error
             errors++;
@@ -305,15 +376,24 @@ export async function handleSyncSales(
       // Database can handle the load, and we want fast sync
     }
 
+    const skipped = sessionDataMap.size - updated - errors;
     logger.info(
-      `Sales count sync completed - total=${sessionDataMap.size}, updated=${updated}, errors=${errors}, skipped=${sessionDataMap.size - updated - errors}`,
+      `Sales count sync completed - total=${sessionDataMap.size}, updated=${updated}, errors=${errors}, skipped=${skipped}`,
     );
 
     // Log summary of what was found vs updated for debugging
     if (sessionDataMap.size > 0 && updated === 0) {
       logger.warn(
-        `WARNING: Found ${sessionDataMap.size} sessions in Redis but updated 0. This may indicate: 1) All sessions already in sync, 2) Redis values <= DB values, or 3) Database connection issue. Check logs above for details.`,
+        `WARNING: Found ${sessionDataMap.size} sessions in Redis but updated 0. This may indicate: 1) All sessions already in sync, 2) Redis values === DB values, or 3) Database connection issue. Check logs above for detailed comparison.`,
       );
+    }
+
+    // Log detailed summary for each session found
+    if (sessionDataMap.size > 0) {
+      const sessionSummary = Array.from(sessionDataMap.entries())
+        .map(([id, count]) => `session ${id}=${count}`)
+        .join(', ');
+      logger.info(`Sync summary - Sessions found in Redis: ${sessionSummary}`);
     }
 
     return Promise.resolve({
