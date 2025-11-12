@@ -129,168 +129,204 @@ export async function startLiveSession(
 
   // Use a transaction to atomically check and update, preventing race conditions
   // This ensures only one session per profile can transition to LIVE at a time
-  const result = await prisma.$transaction(async (tx) => {
-    // Re-check session status and get session_profile_id within transaction (it might have changed)
-    const currentSessionCheck = await tx.sessions.findUnique({
-      where: { id: sessionId },
-      select: { status: true, session_profile_id: true },
-    });
+  // Set timeout to 10 seconds to prevent hanging on locks
+  let result: { success: boolean; message: string };
+  try {
+    result = await prisma.$transaction(
+      async (tx) => {
+        // Re-check session status and get session_profile_id within transaction (it might have changed)
+        const currentSessionCheck = await tx.sessions.findUnique({
+          where: { id: sessionId },
+          select: { status: true, session_profile_id: true },
+        });
 
-    if (
-      !currentSessionCheck ||
-      currentSessionCheck.status?.toLowerCase() !==
-        SessionStatus.OPENING.valueOf()
-    ) {
-      return {
-        success: false,
-        message: `Session ${sessionId} is no longer in OPENING status`,
-      };
-    }
+        if (
+          !currentSessionCheck ||
+          currentSessionCheck.status?.toLowerCase() !==
+            SessionStatus.OPENING.valueOf()
+        ) {
+          return {
+            success: false,
+            message: `Session ${sessionId} is no longer in OPENING status`,
+          };
+        }
 
-    if (!currentSessionCheck.session_profile_id) {
-      return {
-        success: false,
-        message: `Session ${sessionId} has no associated profile`,
-      };
-    }
+        if (!currentSessionCheck.session_profile_id) {
+          return {
+            success: false,
+            message: `Session ${sessionId} has no associated profile`,
+          };
+        }
 
-    // Check if there are any LIVE sessions for this profile
-    // Only one LIVE session per profile is allowed, unless ALL existing LIVE sessions are force-stopped
-    // We need to check ALL LIVE sessions, not just the first one, to prevent multiple LIVE sessions
-    const allLiveSessions = await tx.$queryRaw<
-      Array<{ id: number; force_stop: boolean; status: string; name: string }>
-    >`
-      SELECT id, force_stop, status, name
-      FROM session.sessions
-      WHERE session_profile_id = ${currentSessionCheck.session_profile_id}
-        AND LOWER(status) = LOWER(${SessionStatus.LIVE.valueOf()})
-        AND is_deleted = false
-        AND id != ${sessionId}
-    `;
+        // Check if there are any LIVE sessions for this profile
+        // Only one LIVE session per profile is allowed, unless ALL existing LIVE sessions are force-stopped
+        // We need to check ALL LIVE sessions, not just the first one, to prevent multiple LIVE sessions
+        const allLiveSessions = await tx.$queryRaw<
+          Array<{
+            id: number;
+            force_stop: boolean;
+            status: string;
+            name: string;
+          }>
+        >`
+        SELECT id, force_stop, status, name
+      FROM session.sessions 
+        WHERE session_profile_id = ${currentSessionCheck.session_profile_id}
+          AND LOWER(status) = LOWER(${SessionStatus.LIVE.valueOf()})
+          AND is_deleted = false
+          AND id != ${sessionId}
+      `;
 
-    if (allLiveSessions.length > 0) {
-      // Check if ALL existing LIVE sessions are force-stopped or no longer LIVE
-      const activeLiveSessions = allLiveSessions.filter(
-        (session) =>
-          session.force_stop !== true &&
-          session.status?.toLowerCase() === SessionStatus.LIVE.valueOf(),
-      );
+        if (allLiveSessions.length > 0) {
+          // Check if ALL existing LIVE sessions are force-stopped or no longer LIVE
+          const activeLiveSessions = allLiveSessions.filter(
+            (session) =>
+              session.force_stop !== true &&
+              session.status?.toLowerCase() === SessionStatus.LIVE.valueOf(),
+          );
 
-      if (activeLiveSessions.length > 0) {
-        // There's at least one active (non-force-stopped) LIVE session, block the transition
-        const activeSessionIds = activeLiveSessions.map((s) => s.id).join(', ');
-        logger.warn(
-          `Cannot transition session ${sessionId} to LIVE: Session profile ${currentSessionCheck.session_profile_id} already has ${activeLiveSessions.length} active LIVE session(s) (${activeSessionIds}) that are not force-stopped. Skipping auto-start.`,
+          if (activeLiveSessions.length > 0) {
+            // There's at least one active (non-force-stopped) LIVE session, block the transition
+            const activeSessionIds = activeLiveSessions
+              .map((s) => s.id)
+              .join(', ');
+            logger.warn(
+              `Cannot transition session ${sessionId} to LIVE: Session profile ${currentSessionCheck.session_profile_id} already has ${activeLiveSessions.length} active LIVE session(s) (${activeSessionIds}) that are not force-stopped. Skipping auto-start.`,
+            );
+            return {
+              success: false,
+              message: `Session profile ${currentSessionCheck.session_profile_id} already has active LIVE session(s) (${activeSessionIds}). Cannot start another LIVE session automatically until all LIVE sessions end or are force-stopped.`,
+            };
+          } else {
+            // All existing LIVE sessions are force-stopped or no longer LIVE, we can proceed
+            const forceStoppedIds = allLiveSessions
+              .filter((s) => s.force_stop === true)
+              .map((s) => s.id)
+              .join(', ');
+            logger.info(
+              `All existing LIVE session(s) (${forceStoppedIds || 'none'}) are force-stopped or no longer LIVE. Allowing transition of session ${sessionId} to LIVE.`,
+            );
+          }
+        }
+
+        // Use row-level locking (SELECT FOR UPDATE) to prevent race conditions
+        // Lock all OPENING sessions for this profile to ensure only one transitions
+        // This prevents multiple OPENING sessions from transitioning simultaneously
+        // Note: Lock timeout is handled by transaction timeout (10 seconds)
+        const openingSessionsLocked = await tx.$queryRaw<
+          Array<{
+            id: number;
+            start_time: Date | null;
+            created_at: Date | null;
+          }>
+        >`
+        SELECT id, start_time, created_at
+        FROM session.sessions
+        WHERE session_profile_id = ${currentSessionCheck.session_profile_id}
+          AND LOWER(status) = LOWER(${SessionStatus.OPENING.valueOf()})
+          AND is_deleted = false
+        ORDER BY start_time ASC NULLS LAST, created_at ASC NULLS LAST
+        FOR UPDATE
+      `;
+
+        // Get current session's details
+        const currentSessionFull = await tx.sessions.findUnique({
+          where: { id: sessionId },
+          select: { start_time: true, created_at: true },
+        });
+
+        if (!currentSessionFull) {
+          return {
+            success: false,
+            message: `Session ${sessionId} not found`,
+          };
+        }
+
+        // Find current session's position in the locked list
+        const currentSessionIndex = openingSessionsLocked.findIndex(
+          (s) => s.id === sessionId,
         );
+
+        // Verify current session is still OPENING (found in locked rows)
+        if (currentSessionIndex === -1) {
+          return {
+            success: false,
+            message: `Session ${sessionId} is not in OPENING status or was not found in locked rows`,
+          };
+        }
+
+        // Only allow the FIRST OPENING session (index 0) to transition
+        // All other OPENING sessions must wait
+        if (currentSessionIndex !== 0) {
+          const firstSession = openingSessionsLocked[0];
+          logger.warn(
+            `Cannot transition session ${sessionId} to LIVE: Another OPENING session ${firstSession.id} has earlier start_time (position ${currentSessionIndex + 1} of ${openingSessionsLocked.length}). Only the first OPENING session should transition.`,
+          );
+          return {
+            success: false,
+            message: `Another OPENING session ${firstSession.id} has earlier start_time. Only the first OPENING session should transition to LIVE.`,
+          };
+        }
+
+        // Final check: Ensure no other session has become LIVE while we were processing
+        // This is a double-check to prevent race conditions
+        const finalLiveCheck = await tx.$queryRaw<
+          Array<{ id: number; force_stop: boolean; status: string }>
+        >`
+        SELECT id, force_stop, status
+        FROM session.sessions
+        WHERE session_profile_id = ${currentSessionCheck.session_profile_id}
+          AND LOWER(status) = LOWER(${SessionStatus.LIVE.valueOf()})
+          AND is_deleted = false
+          AND id != ${sessionId}
+          AND force_stop = false
+      `;
+
+        if (finalLiveCheck.length > 0) {
+          const activeSessionIds = finalLiveCheck.map((s) => s.id).join(', ');
+          logger.warn(
+            `Cannot transition session ${sessionId} to LIVE: Another session(s) (${activeSessionIds}) became LIVE while processing. Blocking transition to prevent multiple LIVE sessions.`,
+          );
+          return {
+            success: false,
+            message: `Another session(s) (${activeSessionIds}) is already LIVE. Cannot start another LIVE session.`,
+          };
+        }
+
+        // Update session status to LIVE within the transaction
+        await tx.sessions.update({
+          where: { id: sessionId },
+          data: {
+            status: SessionStatus.LIVE.valueOf(),
+            updated_at: new Date(),
+          },
+        });
+
         return {
-          success: false,
-          message: `Session profile ${currentSessionCheck.session_profile_id} already has active LIVE session(s) (${activeSessionIds}). Cannot start another LIVE session automatically until all LIVE sessions end or are force-stopped.`,
+          success: true,
+          message: `Session ${sessionId} is now LIVE - coupon application enabled`,
         };
-      } else {
-        // All existing LIVE sessions are force-stopped or no longer LIVE, we can proceed
-        const forceStoppedIds = allLiveSessions
-          .filter((s) => s.force_stop === true)
-          .map((s) => s.id)
-          .join(', ');
-        logger.info(
-          `All existing LIVE session(s) (${forceStoppedIds || 'none'}) are force-stopped or no longer LIVE. Allowing transition of session ${sessionId} to LIVE.`,
-        );
-      }
-    }
-
-    // Use row-level locking (SELECT FOR UPDATE) to prevent race conditions
-    // Lock all OPENING sessions for this profile to ensure only one transitions
-    // This prevents multiple OPENING sessions from transitioning simultaneously
-    const openingSessionsLocked = await tx.$queryRaw<
-      Array<{ id: number; start_time: Date | null; created_at: Date | null }>
-    >`
-      SELECT id, start_time, created_at
-      FROM session.sessions
-      WHERE session_profile_id = ${currentSessionCheck.session_profile_id}
-        AND LOWER(status) = LOWER(${SessionStatus.OPENING.valueOf()})
-        AND is_deleted = false
-      ORDER BY start_time ASC NULLS LAST, created_at ASC NULLS LAST
-      FOR UPDATE
-    `;
-
-    // Get current session's details
-    const currentSessionFull = await tx.sessions.findUnique({
-      where: { id: sessionId },
-      select: { start_time: true, created_at: true },
-    });
-
-    if (!currentSessionFull) {
-      return {
-        success: false,
-        message: `Session ${sessionId} not found`,
-      };
-    }
-
-    // Find current session's position in the locked list
-    const currentSessionIndex = openingSessionsLocked.findIndex(
-      (s) => s.id === sessionId,
-    );
-
-    // Verify current session is still OPENING (found in locked rows)
-    if (currentSessionIndex === -1) {
-      return {
-        success: false,
-        message: `Session ${sessionId} is not in OPENING status or was not found in locked rows`,
-      };
-    }
-
-    // Only allow the FIRST OPENING session (index 0) to transition
-    // All other OPENING sessions must wait
-    if (currentSessionIndex !== 0) {
-      const firstSession = openingSessionsLocked[0];
-      logger.warn(
-        `Cannot transition session ${sessionId} to LIVE: Another OPENING session ${firstSession.id} has earlier start_time (position ${currentSessionIndex + 1} of ${openingSessionsLocked.length}). Only the first OPENING session should transition.`,
-      );
-      return {
-        success: false,
-        message: `Another OPENING session ${firstSession.id} has earlier start_time. Only the first OPENING session should transition to LIVE.`,
-      };
-    }
-
-    // Final check: Ensure no other session has become LIVE while we were processing
-    // This is a double-check to prevent race conditions
-    const finalLiveCheck = await tx.$queryRaw<
-      Array<{ id: number; force_stop: boolean; status: string }>
-    >`
-      SELECT id, force_stop, status
-      FROM session.sessions
-      WHERE session_profile_id = ${currentSessionCheck.session_profile_id}
-        AND LOWER(status) = LOWER(${SessionStatus.LIVE.valueOf()})
-        AND is_deleted = false
-        AND id != ${sessionId}
-        AND force_stop = false
-    `;
-
-    if (finalLiveCheck.length > 0) {
-      const activeSessionIds = finalLiveCheck.map((s) => s.id).join(', ');
-      logger.warn(
-        `Cannot transition session ${sessionId} to LIVE: Another session(s) (${activeSessionIds}) became LIVE while processing. Blocking transition to prevent multiple LIVE sessions.`,
-      );
-      return {
-        success: false,
-        message: `Another session(s) (${activeSessionIds}) is already LIVE. Cannot start another LIVE session.`,
-      };
-    }
-
-    // Update session status to LIVE within the transaction
-    await tx.sessions.update({
-      where: { id: sessionId },
-      data: {
-        status: SessionStatus.LIVE.valueOf(),
-        updated_at: new Date(),
       },
-    });
-
+      {
+        maxWait: 10000, // Maximum time to wait for a transaction slot (10 seconds)
+        timeout: 10000, // Maximum time the transaction can run (10 seconds)
+      },
+    );
+  } catch (transactionError) {
+    // Handle transaction timeout or other transaction errors
+    const errorMessage =
+      transactionError instanceof Error
+        ? transactionError.message
+        : String(transactionError);
+    logger.error(
+      `Transaction failed for session ${sessionId}: ${errorMessage}`,
+      transactionError instanceof Error ? transactionError.stack : undefined,
+    );
     return {
-      success: true,
-      message: `Session ${sessionId} is now LIVE - coupon application enabled`,
+      success: false,
+      message: `Transaction failed: ${errorMessage}. This may be due to database locks or timeout.`,
     };
-  });
+  }
 
   if (result.success) {
     logger.info(

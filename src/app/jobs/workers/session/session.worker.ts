@@ -12,7 +12,10 @@
  */
 
 import { Worker } from 'bullmq';
-import { createRedisConnection } from './config/redis.config';
+import {
+  createRedisConnection,
+  createSalesSyncRedisConnection,
+} from './config/redis.config';
 import { handleRotateSession } from './handlers/rotate-session.handler';
 import { handleThresholdReached } from './handlers/threshold-reached.handler';
 import { handleSyncSales } from './handlers/sync-sales.handler';
@@ -25,6 +28,8 @@ import {
 
 // Create Redis connection for worker
 const connection = createRedisConnection();
+// Create separate Redis connection for sales sync (uses REDIS_DB, not REDIS_BULLMQ_DB)
+const salesSyncConnection = createSalesSyncRedisConnection();
 const logger: StandaloneLogger = createStandaloneLogger('SessionWorker');
 
 // Log worker initialization
@@ -83,7 +88,8 @@ export const sessionWorker = new Worker(
       } else if (job.name === 'threshold-reached') {
         result = await handleThresholdReached(job, connection);
       } else if (job.name === 'sync-sales') {
-        result = await handleSyncSales(job, connection);
+        // Use sales sync connection (REDIS_DB) instead of worker connection (REDIS_BULLMQ_DB)
+        result = await handleSyncSales(job, salesSyncConnection);
       } else if (job.name === 'start-live') {
         result = await handleStartLive(job);
       } else if (job.name === 'sync-opening-sessions') {

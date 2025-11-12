@@ -63,6 +63,7 @@ interface SalesUpdatePayload {
 export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisSubscriberService.name);
   private subscriber: IORedis | null = null;
+  private salesStorageConnection: IORedis | null = null;
 
   constructor(
     @Inject('BULLMQ_CONNECTION') private readonly redisConnection: IORedis,
@@ -75,12 +76,22 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
     if (!this.sessionService) {
       throw new Error('SessionService is required');
     }
+
+    // Log which Redis database the BULLMQ_CONNECTION is using
+    const dbIndex =
+      this.redisConnection.options?.db !== undefined
+        ? this.redisConnection.options.db
+        : 'unknown';
+    this.logger.log(
+      `RedisSubscriberService initialized - BULLMQ_CONNECTION using Redis DB index: ${dbIndex}`,
+    );
   }
 
   /**
    * Initialize the Redis subscriber when the module starts
    */
   async onModuleInit() {
+    this.createSalesStorageConnection();
     await this.connectAndSubscribe();
   }
 
@@ -95,6 +106,10 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       await this.subscriber.quit();
       this.subscriber = null;
     }
+    if (this.salesStorageConnection) {
+      await this.salesStorageConnection.quit();
+      this.salesStorageConnection = null;
+    }
   }
 
   /**
@@ -102,6 +117,120 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
    * Sets up message handlers and error handlers for the pub/sub connection.
    * Uses the same Redis connection configuration as BullmqModule.
    */
+  /**
+   * Creates a separate Redis connection for storing sales data
+   * Uses REDIS_DB (not REDIS_BULLMQ_DB) to match where sync worker reads from
+   */
+  private createSalesStorageConnection() {
+    try {
+      const redisUrl = normalizeRedisUrl(
+        process.env.REDIS_URL || process.env.REDIS_BULLMQ_URL || undefined,
+      );
+
+      // Use REDIS_DB only (not REDIS_BULLMQ_DB) to match where sync worker reads from
+      const dbIndex = resolveRedisDbIndex(redisUrl || '', {
+        envNames: ['REDIS_DB'], // Only use REDIS_DB, not REDIS_BULLMQ_DB
+      });
+
+      this.logger.log(
+        `Creating Redis connection for sales storage with database index: ${dbIndex} (resolved from REDIS_DB=${process.env.REDIS_DB || 'not set'})`,
+      );
+
+      const tlsFlag = (process.env.REDIS_TLS || '').toLowerCase();
+      let wantsTls: boolean | null = null;
+      if (['true', '1', 'yes'].includes(tlsFlag)) wantsTls = true;
+      if (['false', '0', 'no'].includes(tlsFlag)) wantsTls = false;
+      if (wantsTls === null) {
+        try {
+          const u = new URL(redisUrl);
+          if (u.protocol === 'rediss:') wantsTls = true;
+          const sslParam =
+            u.searchParams.get('ssl') || u.searchParams.get('tls');
+          if (wantsTls === null && sslParam && /^(1|true|yes)$/i.test(sslParam))
+            wantsTls = true;
+        } catch {
+          // URL parsing failed, continue with default
+        }
+        if (wantsTls === null) wantsTls = false;
+      }
+      const rejectUnauthorized =
+        process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false';
+
+      const options: RedisOptions = {
+        ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),
+        db: dbIndex,
+        retryStrategy: (times) => {
+          const delay = Math.min(times * 200, 5000);
+          this.logger.warn(
+            `Sales storage Redis connection failed, retrying in ${delay}ms (attempt ${times})`,
+          );
+          return delay;
+        },
+        reconnectOnError: (err) => {
+          const reconnectErrors = [
+            'READONLY',
+            'ECONNREFUSED',
+            'ETIMEDOUT',
+            'ENOTFOUND',
+            'ECONNRESET',
+            'EPIPE',
+            'Connection lost',
+            'Connection closed',
+          ];
+          const shouldReconnect = reconnectErrors.some((errorType) =>
+            err.message.includes(errorType),
+          );
+          if (shouldReconnect) {
+            this.logger.warn(
+              `Sales storage Redis error detected (${err.message}), attempting reconnection...`,
+            );
+            return true;
+          }
+          return false;
+        },
+        enableReadyCheck: true,
+        lazyConnect: false,
+        enableOfflineQueue: true,
+        connectTimeout: 10000,
+        keepAlive: 30000,
+      };
+
+      this.salesStorageConnection = new IORedis(redisUrl, options);
+
+      this.salesStorageConnection.on('error', (err) => {
+        this.logger.error(
+          `Sales storage Redis connection error: ${err.message}`,
+        );
+      });
+
+      this.salesStorageConnection.on('connect', () => {
+        this.logger.log('Sales storage Redis connection established');
+      });
+
+      this.salesStorageConnection.on('ready', () => {
+        this.logger.log('Sales storage Redis connection ready and operational');
+      });
+
+      this.salesStorageConnection.on('close', () => {
+        this.logger.warn(
+          'Sales storage Redis connection closed - will attempt to reconnect',
+        );
+      });
+
+      this.salesStorageConnection.on('reconnecting', (delay: number) => {
+        this.logger.warn(`Sales storage Redis reconnecting in ${delay}ms...`);
+      });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to create sales storage Redis connection: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      throw error;
+    }
+  }
+
   private async connectAndSubscribe() {
     try {
       // Create a dedicated subscriber client (Redis requires separate connection for pub/sub)
@@ -133,6 +262,10 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       const dbIndex = resolveRedisDbIndex(redisUrl, {
         envNames: ['REDIS_BULLMQ_DB', 'REDIS_DB'],
       });
+
+      this.logger.log(
+        `Redis subscriber will use database index: ${dbIndex} (resolved from REDIS_BULLMQ_DB=${process.env.REDIS_BULLMQ_DB || 'not set'}, REDIS_DB=${process.env.REDIS_DB || 'not set'})`,
+      );
 
       const options: RedisOptions = {
         ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),
@@ -298,7 +431,13 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
             );
           });
         } else if (channel === SALES_UPDATE_CHANNEL) {
-          this.handleSalesUpdate(message);
+          // Fire and forget - handle errors internally
+          this.handleSalesUpdate(message).catch((error) => {
+            this.logger.error(
+              `Error handling sales update message: ${error instanceof Error ? error.message : String(error)}`,
+              error instanceof Error ? error.stack : undefined,
+            );
+          });
         }
       });
 
@@ -521,7 +660,7 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
    *
    * @param message - The raw message string from Redis pub/sub
    */
-  private handleSalesUpdate(message: string) {
+  private async handleSalesUpdate(message: string) {
     try {
       if (
         !message ||
@@ -585,6 +724,47 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `Received sales update event: session_id=${sessionId}, session_profile_id=${sessionProfileId}, count=${payload.count}`,
       );
+
+      // Store the sales count in Redis key for sync job to pick up
+      // This key is what the sync-sales job scans for
+      // Use salesStorageConnection (REDIS_DB) instead of redisConnection (BULLMQ_CONNECTION)
+      const salesRedisKey = `session:sales:${sessionId}`;
+      if (!this.salesStorageConnection) {
+        this.logger.error(
+          'Sales storage connection not initialized - cannot store sales count',
+        );
+        return;
+      }
+
+      try {
+        // Get the database index BEFORE storing for logging
+        const dbIndex =
+          this.salesStorageConnection.options?.db !== undefined
+            ? this.salesStorageConnection.options.db
+            : 'unknown';
+
+        // Set the count directly (the count from payload is already cumulative)
+        // Use SET instead of INCR because the payload contains the total count
+        await this.salesStorageConnection.set(
+          salesRedisKey,
+          payload.count.toString(),
+        );
+
+        // Verify the value was stored correctly
+        const storedValue =
+          await this.salesStorageConnection.get(salesRedisKey);
+        this.logger.log(
+          `Stored sales count in Redis: ${salesRedisKey}=${payload.count} (Redis DB index: ${dbIndex}, verified: ${storedValue})`,
+        );
+      } catch (redisError) {
+        // Log error but don't fail - WebSocket broadcast should still work
+        const errorMessage =
+          redisError instanceof Error ? redisError.message : String(redisError);
+        this.logger.error(
+          `Failed to store sales count in Redis key ${salesRedisKey}: ${errorMessage}`,
+          redisError instanceof Error ? redisError.stack : undefined,
+        );
+      }
 
       this.socketGateway.broadcastSalesCountUpdate(
         sessionId,

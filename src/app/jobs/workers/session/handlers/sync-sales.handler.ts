@@ -68,7 +68,12 @@ export async function handleSyncSales(
   errors: number;
 }> {
   try {
-    logger.info('Starting sales count sync from Redis to database');
+    // Log which Redis database we're using for debugging
+    const dbIndex =
+      connection.options?.db !== undefined ? connection.options.db : 'unknown';
+    logger.info(
+      `Starting sales count sync from Redis to database (Redis DB index: ${dbIndex})`,
+    );
 
     // Scan Redis for all keys matching session:sales:* pattern
     const redisKeys: string[] = [];
@@ -87,7 +92,20 @@ export async function handleSyncSales(
     } while (cursor !== '0');
 
     if (redisKeys.length === 0) {
-      logger.info('No sales data found in Redis to sync');
+      logger.warn(
+        `No sales data found in Redis to sync (Redis DB index: ${dbIndex}) - checking if keys exist with different pattern`,
+      );
+      // Debug: Try to check if any session:sales keys exist at all
+      const testKey = await connection.keys('session:sales:*');
+      if (testKey.length > 0) {
+        logger.warn(
+          `Found ${testKey.length} keys with KEYS command but SCAN found 0 - possible database mismatch. Keys found: ${testKey.slice(0, 5).join(', ')}${testKey.length > 5 ? '...' : ''}`,
+        );
+      } else {
+        logger.warn(
+          `No session:sales:* keys found in Redis DB index ${dbIndex} - sales data may be stored in a different Redis database`,
+        );
+      }
       return Promise.resolve({
         synced: true,
         total: 0,
@@ -96,7 +114,9 @@ export async function handleSyncSales(
       });
     }
 
-    logger.info(`Found ${redisKeys.length} sessions with sales data in Redis`);
+    logger.info(
+      `Found ${redisKeys.length} sessions with sales data in Redis: ${redisKeys.slice(0, 10).join(', ')}${redisKeys.length > 10 ? '...' : ''}`,
+    );
 
     let updated = 0;
     let errors = 0;
@@ -104,23 +124,24 @@ export async function handleSyncSales(
     // Extract session IDs from Redis keys (format: session:sales:{id})
     const sessionDataMap = new Map<number, number>();
 
-    // Read all Redis values in batches
+    // Read all Redis values in batches using mget for better performance
+    // mget is faster than multiple individual get() calls
     for (let i = 0; i < redisKeys.length; i += BATCH_SIZE) {
       const batch = redisKeys.slice(i, i + BATCH_SIZE);
-      const values = await Promise.allSettled(
-        batch.map((key) => connection.get(key)),
-      );
+
+      // Use mget for batch reads (faster than Promise.all with individual gets)
+      const values = await connection.mget(...batch);
 
       // Parse session ID and count
       batch.forEach((key, index) => {
-        const valueResult = values[index];
-        if (valueResult.status === 'fulfilled' && valueResult.value) {
+        const value = values[index];
+        if (value) {
           // Extract session ID from key: session:sales:{id}
           const sessionIdStr = key.replace('session:sales:', '');
           const sessionId = parseInt(sessionIdStr, 10);
 
           if (!isNaN(sessionId)) {
-            const count = parseInt(valueResult.value, 10);
+            const count = parseInt(value, 10);
             if (!isNaN(count)) {
               sessionDataMap.set(sessionId, count);
             }
@@ -139,7 +160,9 @@ export async function handleSyncSales(
       });
     }
 
-    logger.info(`Processing ${sessionDataMap.size} sessions for sync`);
+    logger.info(
+      `Processing ${sessionDataMap.size} sessions for sync. Session IDs: ${Array.from(sessionDataMap.keys()).slice(0, 10).join(', ')}${sessionDataMap.size > 10 ? '...' : ''}`,
+    );
 
     // Fetch ONLY sessions that exist in Redis (optimized bulk query)
     const sessionIds = Array.from(sessionDataMap.keys());
@@ -167,7 +190,6 @@ export async function handleSyncSales(
       const batchIds = sessionIds.slice(i, i + BATCH_SIZE);
 
       const updatePromises = batchIds.map(async (sessionId) => {
-        const redisCount = sessionDataMap.get(sessionId) || 0;
         const redisKey = `session:sales:${sessionId}`;
 
         const removeRedisKey = async (reason: string) => {
@@ -188,10 +210,22 @@ export async function handleSyncSales(
         };
 
         try {
-          // Check if Redis key still exists (might be deleted during session creation)
-          const keyExists = await connection.exists(redisKey);
-          if (!keyExists) {
-            logger.debug(`Redis key ${redisKey} already deleted, skipping`);
+          // Re-read Redis value right before update to ensure we have the latest value
+          // This prevents using stale values from the initial batch read
+          // Using get() directly is faster than exists() + get() (one less round trip)
+          const latestRedisValue = await connection.get(redisKey);
+          if (!latestRedisValue) {
+            logger.warn(
+              `Redis key ${redisKey} has no value or was deleted between scan and update - this may indicate database mismatch`,
+            );
+            return;
+          }
+
+          const latestRedisCount = parseInt(latestRedisValue, 10);
+          if (isNaN(latestRedisCount)) {
+            logger.warn(
+              `Redis key ${redisKey} has invalid value: ${latestRedisValue}, skipping`,
+            );
             return;
           }
 
@@ -210,20 +244,25 @@ export async function handleSyncSales(
             return;
           }
 
-          const currentDbCount = session.current_sales_count || 0;
+          // Handle null DB values properly - null means 0, but we should sync if Redis has a value
+          const currentDbCount =
+            session.current_sales_count !== null &&
+            session.current_sales_count !== undefined
+              ? session.current_sales_count
+              : 0;
 
           // Redis contains the TOTAL/cumulative count for the session
           // DO NOT delete the Redis key - it must stay persistent for the session
           // Only sync if Redis count is higher than DB (new sales to sync)
-          if (redisCount <= currentDbCount) {
+          if (latestRedisCount <= currentDbCount) {
             logger.debug(
-              `Session ${sessionId} already in sync (Redis ${redisCount} <= DB ${currentDbCount}), skipping`,
+              `Session ${sessionId} already in sync (Redis ${latestRedisCount} <= DB ${currentDbCount}), skipping`,
             );
             return;
           }
 
           // Redis has the cumulative total, so we just use it directly
-          const newCount = redisCount;
+          const newCount = latestRedisCount;
 
           try {
             // Update database
@@ -233,8 +272,8 @@ export async function handleSyncSales(
             });
 
             updated++;
-            logger.debug(
-              `Updated session ${sessionId}: DB ${currentDbCount} → ${newCount} (Redis total)`,
+            logger.info(
+              `Updated session ${sessionId}: DB ${currentDbCount} → ${newCount} (Redis total, diff: +${newCount - currentDbCount})`,
             );
           } catch (updateError) {
             // DB update failed - don't lose the count, just log error
@@ -262,15 +301,20 @@ export async function handleSyncSales(
 
       await Promise.allSettled(updatePromises);
 
-      // Small delay between batches
-      if (i + BATCH_SIZE < sessionIds.length) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+      // No delay needed - Promise.allSettled already handles concurrency
+      // Database can handle the load, and we want fast sync
     }
 
     logger.info(
-      `Sales count sync completed - total=${sessionDataMap.size}, updated=${updated}, errors=${errors}`,
+      `Sales count sync completed - total=${sessionDataMap.size}, updated=${updated}, errors=${errors}, skipped=${sessionDataMap.size - updated - errors}`,
     );
+
+    // Log summary of what was found vs updated for debugging
+    if (sessionDataMap.size > 0 && updated === 0) {
+      logger.warn(
+        `WARNING: Found ${sessionDataMap.size} sessions in Redis but updated 0. This may indicate: 1) All sessions already in sync, 2) Redis values <= DB values, or 3) Database connection issue. Check logs above for details.`,
+      );
+    }
 
     return Promise.resolve({
       synced: true,
