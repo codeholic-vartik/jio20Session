@@ -10,6 +10,7 @@ import {
   StandaloneLogger,
 } from '../../../../../common/logger/logger.util';
 import { normalizeRedisUrl } from '../../../../../common/utils/redis-url.util';
+import { resolveRedisDbIndex } from '../../../../../common/utils/redis-db.util';
 
 const logger: StandaloneLogger = createStandaloneLogger('SessionWorkerRedis');
 
@@ -42,7 +43,18 @@ export function createRedisConnection(): IORedis {
     process.env.REDIS_BULLMQ_URL || process.env.REDIS_URL || undefined,
   );
 
+  // Use the same database index resolution as the queue connection
+  // This ensures worker and queue use the same Redis database
+  const dbIndex = resolveRedisDbIndex(redisUrl || '', {
+    envNames: ['REDIS_BULLMQ_DB', 'REDIS_DB'],
+  });
+
+  logger.info(
+    `Creating Redis connection for worker with database index: ${dbIndex}`,
+  );
+
   const connection = new IORedis(redisUrl, {
+    db: dbIndex, // Use the same database index as the queue
     maxRetriesPerRequest: null, // Required by BullMQ for blocking commands
     retryStrategy: (times) => {
       // Retry indefinitely with exponential backoff

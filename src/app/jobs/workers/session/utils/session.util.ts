@@ -8,11 +8,11 @@
  *
  * @description
  * Calculates the end time of a session by adding the duration to the start time.
- * Supports hours, minutes, and days as duration units.
+ * Supports: seconds, minutes, hours, days, years (both singular and plural, case-insensitive)
  *
  * @param {Date} startTime - Session start time
  * @param {number | null} durationValue - Duration value (e.g., 2 for 2 hours)
- * @param {string | null} durationUnit - Duration unit: 'hours', 'minutes', or 'days'
+ * @param {string | null} durationUnit - Duration unit: 'seconds', 'minutes', 'hours', 'days', or 'years'
  * @returns {Date | null} Calculated end time, or null if invalid inputs
  *
  * @example
@@ -35,15 +35,29 @@ export function calculateEndTime(
   }
 
   const endTime = new Date(startTime);
-  switch (durationUnit.toLowerCase()) {
-    case 'hours':
-      endTime.setHours(endTime.getHours() + durationValue);
+  // Normalize unit: handle both singular and plural, case-insensitive
+  const unit = durationUnit.toLowerCase().trim();
+
+  switch (unit) {
+    case 'seconds':
+    case 'second':
+      endTime.setSeconds(endTime.getSeconds() + durationValue);
       break;
     case 'minutes':
+    case 'minute':
       endTime.setMinutes(endTime.getMinutes() + durationValue);
       break;
+    case 'hours':
+    case 'hour':
+      endTime.setHours(endTime.getHours() + durationValue);
+      break;
     case 'days':
+    case 'day':
       endTime.setDate(endTime.getDate() + durationValue);
+      break;
+    case 'years':
+    case 'year':
+      endTime.setFullYear(endTime.getFullYear() + durationValue);
       break;
     default:
       return null;

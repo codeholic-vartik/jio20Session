@@ -26,7 +26,7 @@ export class SessionService {
 
   /**
    * Calculates end time based on duration from profile
-   * Supports: seconds, minutes, hours, days, years
+   * Supports: seconds, minutes, hours, days, years (both singular and plural, case-insensitive)
    */
   private calculateEndTime(
     startTime: Date,
@@ -38,20 +38,28 @@ export class SessionService {
     }
 
     const endTime = new Date(startTime);
-    switch (durationUnit.toLowerCase()) {
+    // Normalize unit: handle both singular and plural, case-insensitive
+    const unit = durationUnit.toLowerCase().trim();
+
+    switch (unit) {
       case 'seconds':
+      case 'second':
         endTime.setSeconds(endTime.getSeconds() + durationValue);
         break;
       case 'minutes':
+      case 'minute':
         endTime.setMinutes(endTime.getMinutes() + durationValue);
         break;
       case 'hours':
+      case 'hour':
         endTime.setHours(endTime.getHours() + durationValue);
         break;
       case 'days':
+      case 'day':
         endTime.setDate(endTime.getDate() + durationValue);
         break;
       case 'years':
+      case 'year':
         endTime.setFullYear(endTime.getFullYear() + durationValue);
         break;
       default:
@@ -92,7 +100,10 @@ export class SessionService {
     }
 
     // Validate and update existing session if sessionId is provided
-    const currentTime = new Date();
+    // JavaScript Date objects are always UTC internally (milliseconds since epoch)
+    // When stored in PostgreSQL Timestamptz, they are stored as UTC
+    const currentTime = new Date(); // UTC internally, will be stored as UTC in database
+
     if (sessionId) {
       const existingSession = await this.prisma.sessions.findUnique({
         where: { id: sessionId },
@@ -112,11 +123,13 @@ export class SessionService {
       // Update previous session: set start_time to current time and change status from UPCOMING to OPENING
       if (existingSession.status === SessionStatus.UPCOMING.valueOf()) {
         // Update session with start_time and trigger values
+        // currentTime is already UTC internally (JavaScript Date stores as UTC milliseconds since epoch)
+        // Prisma/PostgreSQL Timestamptz will store it correctly as UTC
         const updatedSession = await this.prisma.sessions.update({
           where: { id: sessionId },
           data: {
             status: SessionStatus.OPENING,
-            start_time: currentTime, // Store UTC timestamp (timezone-aware)
+            start_time: currentTime, // JavaScript Date is UTC internally, stored as UTC in Timestamptz
             start_trigger_type: sessionProfile.session_duration_unit,
             start_trigger_value: sessionProfile.session_duration_value,
           },
@@ -128,8 +141,12 @@ export class SessionService {
           },
         });
 
+        // Log UTC time explicitly to verify
+        const storedTimeUTC = updatedSession.start_time
+          ? new Date(updatedSession.start_time).toISOString()
+          : null;
         this.logger.log(
-          `Updated session ${sessionId} status to OPENING and set start_time to ${updatedSession.start_time?.toISOString()} for profile ${sessionProfileId}`,
+          `Updated session ${sessionId} status to OPENING and set start_time (UTC): ${storedTimeUTC} for profile ${sessionProfileId}`,
         );
 
         // Schedule start-live job at exact time: start_time + duration

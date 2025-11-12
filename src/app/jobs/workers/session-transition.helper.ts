@@ -10,6 +10,7 @@ const logger: StandaloneLogger = createStandaloneLogger('SessionTransition');
 
 /**
  * Calculates delay in milliseconds based on duration value and unit
+ * Supports: seconds, minutes, hours, days, years (both singular and plural, case-insensitive)
  */
 export function calculateDelayMs(
   durationValue: number | null,
@@ -19,15 +20,24 @@ export function calculateDelayMs(
     return null;
   }
 
-  const unit = durationUnit.toLowerCase();
+  // Normalize unit: handle both singular and plural, case-insensitive
+  const unit = durationUnit.toLowerCase().trim();
+
   switch (unit) {
+    case 'seconds':
+    case 'second':
+      return durationValue * 1000;
     case 'minutes':
+    case 'minute':
       return durationValue * 60 * 1000;
     case 'hours':
+    case 'hour':
       return durationValue * 60 * 60 * 1000;
     case 'days':
+    case 'day':
       return durationValue * 24 * 60 * 60 * 1000;
     case 'years':
+    case 'year':
       return durationValue * 365 * 24 * 60 * 60 * 1000; // Approximate year
     default:
       return null;
@@ -99,8 +109,9 @@ export async function startLiveSession(
     };
   }
 
-  // Only transition if status is OPENING
-  if (session.status !== SessionStatus.OPENING.valueOf()) {
+  // Only transition if status is OPENING (case-insensitive to support legacy data)
+  const sessionStatus = session.status?.toLowerCase();
+  if (sessionStatus !== SessionStatus.OPENING.valueOf()) {
     logger.warn(
       `Session ${sessionId} is not in OPENING status (current: ${session.status}), skipping transition`,
     );
@@ -114,7 +125,10 @@ export async function startLiveSession(
   const existingLiveSession = await prisma.sessions.findFirst({
     where: {
       session_profile_id: session.session_profile_id,
-      status: SessionStatus.LIVE.valueOf(),
+      status: {
+        equals: SessionStatus.LIVE.valueOf(),
+        mode: 'insensitive',
+      },
       is_deleted: false,
       id: {
         not: sessionId, // Exclude current session
@@ -140,7 +154,7 @@ export async function startLiveSession(
   await prisma.sessions.update({
     where: { id: sessionId },
     data: {
-      status: SessionStatus.LIVE,
+      status: SessionStatus.LIVE.valueOf(),
       updated_at: new Date(),
     },
   });
@@ -205,8 +219,29 @@ export async function scheduleStartLiveJob(
   // Use unique job ID to prevent duplicate jobs
   const jobId = `start-live-${sessionId}`;
 
+  // Log scheduling details for debugging
+  logger.info(
+    `Scheduling start-live job for session ${sessionId}: startTime=${startTime?.toISOString()}, duration=${durationValue} ${durationUnit}, expectedLiveTime=${expectedLiveTime.toISOString()}, delayMs=${delayMs}, delayHours=${(delayMs / (1000 * 60 * 60)).toFixed(2)}`,
+  );
+
   try {
-    await sessionQueue.add(
+    // Remove any existing job with the same ID first to avoid conflicts
+    try {
+      const existingJob = await sessionQueue.getJob(jobId);
+      if (existingJob) {
+        await existingJob.remove();
+        logger.info(
+          `Removed existing start-live job for session ${sessionId} before scheduling new one`,
+        );
+      }
+    } catch (removeError) {
+      // Ignore errors when removing (job might not exist)
+      logger.debug(
+        `No existing job to remove for session ${sessionId}: ${removeError instanceof Error ? removeError.message : String(removeError)}`,
+      );
+    }
+
+    const job = await sessionQueue.add(
       'start-live',
       { sessionId },
       {
@@ -216,17 +251,33 @@ export async function scheduleStartLiveJob(
       },
     );
 
+    // Verify job was created and get its state
+    const jobState = await job.getState();
+    const jobDelay = job.opts?.delay || 0;
+
     logger.info(
-      `Scheduled start-live job for session ${sessionId} at exact time ${expectedLiveTime.toISOString()} (delay: ${delayMs}ms, duration: ${durationValue} ${durationUnit})`,
+      `Successfully scheduled start-live job for session ${sessionId}: jobId=${job.id}, state=${jobState}, expectedExecutionTime=${expectedLiveTime.toISOString()}, delayMs=${delayMs} (${(delayMs / 1000).toFixed(0)}s, ${(delayMs / (1000 * 60)).toFixed(2)}min, ${(delayMs / (1000 * 60 * 60)).toFixed(2)}h), jobDelay=${jobDelay}ms`,
     );
+
+    // Additional verification: check if job exists in waiting/delayed state
+    if (delayMs > 0) {
+      const waitingCount = await sessionQueue.getWaitingCount();
+      const delayedCount = await sessionQueue.getDelayedCount();
+      logger.info(
+        `Queue status for session ${sessionId}: waiting=${waitingCount}, delayed=${delayedCount}`,
+      );
+    }
   } catch (scheduleError) {
     const errorMessage =
       scheduleError instanceof Error
         ? scheduleError.message
         : String(scheduleError);
+    const errorStack =
+      scheduleError instanceof Error ? scheduleError.stack : undefined;
 
     logger.error(
       `Failed to schedule start-live job for session ${sessionId}: ${errorMessage}`,
+      errorStack,
     );
     // Don't throw - allow session creation to continue
   }
@@ -234,6 +285,7 @@ export async function scheduleStartLiveJob(
 
 /**
  * Calculates the expected transition time from OPENING to LIVE
+ * All times are in UTC - startTime is UTC, result is UTC
  */
 function calculateExpectedLiveTime(
   startTime: Date | null,
@@ -244,6 +296,8 @@ function calculateExpectedLiveTime(
     return null;
   }
 
+  // startTime is already UTC (JavaScript Date is UTC internally)
+  // Create a new Date object from the UTC timestamp to ensure UTC calculations
   const expectedTime = new Date(startTime);
   // Normalize unit: handle both singular and plural, case-insensitive
   const unit = durationUnit.toLowerCase().trim();
@@ -296,7 +350,10 @@ export async function syncOpeningSessionsToLive(prisma: PrismaClient): Promise<{
     // Find all OPENING sessions
     const openingSessions = await prisma.sessions.findMany({
       where: {
-        status: SessionStatus.OPENING.valueOf(),
+        status: {
+          equals: SessionStatus.OPENING.valueOf(),
+          mode: 'insensitive',
+        },
         is_deleted: false,
       },
       include: {
