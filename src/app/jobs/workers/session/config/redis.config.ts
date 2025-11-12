@@ -10,6 +10,7 @@ import {
   StandaloneLogger,
 } from '../../../../../common/logger/logger.util';
 import { normalizeRedisUrl } from '../../../../../common/utils/redis-url.util';
+import { resolveRedisDbIndex } from '../../../../../common/utils/redis-db.util';
 
 const logger: StandaloneLogger = createStandaloneLogger('SessionWorkerRedis');
 
@@ -42,7 +43,18 @@ export function createRedisConnection(): IORedis {
     process.env.REDIS_BULLMQ_URL || process.env.REDIS_URL || undefined,
   );
 
+  // Use the same database index resolution as the queue connection
+  // This ensures worker and queue use the same Redis database
+  const dbIndex = resolveRedisDbIndex(redisUrl || '', {
+    envNames: ['REDIS_BULLMQ_DB', 'REDIS_DB'],
+  });
+
+  logger.info(
+    `Creating Redis connection for worker with database index: ${dbIndex} (resolved from REDIS_BULLMQ_DB=${process.env.REDIS_BULLMQ_DB || 'not set'}, REDIS_DB=${process.env.REDIS_DB || 'not set'})`,
+  );
+
   const connection = new IORedis(redisUrl, {
+    db: dbIndex, // Use the same database index as the queue
     maxRetriesPerRequest: null, // Required by BullMQ for blocking commands
     retryStrategy: (times) => {
       // Retry indefinitely with exponential backoff
@@ -108,6 +120,98 @@ export function createRedisConnection(): IORedis {
 
   connection.on('reconnecting', (delay: number) => {
     logger.warn(`Redis reconnecting in ${delay}ms...`);
+  });
+
+  return connection;
+}
+
+/**
+ * Creates Redis connection specifically for sales sync operations
+ * Uses REDIS_DB (not REDIS_BULLMQ_DB) to match where sales data is stored
+ *
+ * @description
+ * This connection is used by the sync-sales handler to read sales counts
+ * from Redis. It uses REDIS_DB to ensure it reads from the same database
+ * where the subscriber stores sales data.
+ *
+ * @returns {IORedis} Configured Redis connection instance for sales sync
+ */
+export function createSalesSyncRedisConnection(): IORedis {
+  const redisUrl = normalizeRedisUrl(
+    process.env.REDIS_URL || process.env.REDIS_BULLMQ_URL || undefined,
+  );
+
+  // Use REDIS_DB only (not REDIS_BULLMQ_DB) to match where sales data is stored
+  const dbIndex = resolveRedisDbIndex(redisUrl || '', {
+    envNames: ['REDIS_DB'], // Only use REDIS_DB, not REDIS_BULLMQ_DB
+  });
+
+  logger.info(
+    `Creating Redis connection for sales sync with database index: ${dbIndex} (resolved from REDIS_DB=${process.env.REDIS_DB || 'not set'})`,
+  );
+
+  const connection = new IORedis(redisUrl, {
+    db: dbIndex,
+    maxRetriesPerRequest: null,
+    retryStrategy: (times) => {
+      const delay = Math.min(times * 200, 5000);
+      logger.warn(
+        `Sales sync Redis connection failed, retrying in ${delay}ms (attempt ${times})`,
+      );
+      return delay;
+    },
+    reconnectOnError: (err) => {
+      const reconnectErrors = [
+        'READONLY',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'ENOTFOUND',
+        'ECONNRESET',
+        'EPIPE',
+        'Connection lost',
+        'Connection closed',
+      ];
+
+      const shouldReconnect = reconnectErrors.some((errorType) =>
+        err.message.includes(errorType),
+      );
+
+      if (shouldReconnect) {
+        logger.warn(
+          `Sales sync Redis error detected (${err.message}), attempting reconnection...`,
+        );
+        return true;
+      }
+
+      return false;
+    },
+    enableReadyCheck: true,
+    lazyConnect: false,
+    enableOfflineQueue: true,
+    connectTimeout: 10000,
+    keepAlive: 30000,
+  });
+
+  connection.on('error', (err) => {
+    logger.error(`Sales sync Redis connection error: ${err.message}`);
+  });
+
+  connection.on('connect', () => {
+    logger.info('Sales sync Redis connection established');
+  });
+
+  connection.on('ready', () => {
+    logger.info('Sales sync Redis connection ready and operational');
+  });
+
+  connection.on('close', () => {
+    logger.warn(
+      'Sales sync Redis connection closed - will attempt to reconnect',
+    );
+  });
+
+  connection.on('reconnecting', (delay: number) => {
+    logger.warn(`Sales sync Redis reconnecting in ${delay}ms...`);
   });
 
   return connection;
