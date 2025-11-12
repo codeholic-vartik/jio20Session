@@ -833,7 +833,7 @@ model transactions {
 model session_coupons {
   id              Int               @id @default(autoincrement())
   scuid           String            @unique(map: "ix_session_session_coupons_scuid") @db.VarChar(255)
-  session_id      Int
+  session_id      Int?
   user_id         Int
   product_id      Int?
   term_id         Int?
@@ -847,7 +847,7 @@ model session_coupons {
   created_at      DateTime          @default(now()) @db.Timestamptz(6)
   updated_at      DateTime          @default(now()) @db.Timestamptz(6)
   products        products?         @relation(fields: [product_id], references: [id], onUpdate: NoAction)
-  sessions        sessions          @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  sessions        sessions?         @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   taxonomy_terms  taxonomy_terms?   @relation(fields: [term_id], references: [id], onUpdate: NoAction)
   frontendusers   frontendusers     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   session_rewards session_rewards[]
@@ -983,6 +983,7 @@ model sessions {
   auto_close_on_full        Boolean
   created_at                DateTime               @default(now()) @db.Timestamptz(6)
   updated_at                DateTime               @default(now()) @db.Timestamptz(6)
+  force_stop                Boolean                @default(false)
   session_coupons           session_coupons[]
   session_participants      session_participants[]
   session_rewards           session_rewards[]
