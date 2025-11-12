@@ -12,6 +12,60 @@ import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
 import './workers/session/session.worker'; // Ensure worker auto-starts
 
+// Suppress Redis version warnings from IORedis/BullMQ
+// This warning appears when Redis version is < 6.2.0 but the app works fine
+const suppressRedisVersionWarning = (): void => {
+  const originalStdoutWrite = process.stdout.write.bind(
+    process.stdout,
+  ) as typeof process.stdout.write;
+  const originalStderrWrite = process.stderr.write.bind(
+    process.stderr,
+  ) as typeof process.stderr.write;
+
+  const shouldSuppress = (chunk: string | Buffer | Uint8Array): boolean => {
+    const message = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    return (
+      message.includes('highly recommended to use a minimum Redis version') ||
+      message.includes('Current: 6.0.16') ||
+      message.includes('minimum Redis version of 6.2.0') ||
+      message.includes(
+        'It is highly recommended to use a minimum Redis version',
+      )
+    );
+  };
+
+  process.stdout.write = function (
+    chunk: string | Buffer | Uint8Array,
+    encoding?: BufferEncoding | (() => void),
+    cb?: () => void,
+  ): boolean {
+    if (shouldSuppress(chunk)) {
+      return true;
+    }
+    if (typeof encoding === 'function') {
+      return originalStdoutWrite(chunk, encoding);
+    }
+    return originalStdoutWrite(chunk, encoding, cb);
+  };
+
+  process.stderr.write = function (
+    chunk: string | Buffer | Uint8Array,
+    encoding?: BufferEncoding | (() => void),
+    cb?: () => void,
+  ): boolean {
+    if (shouldSuppress(chunk)) {
+      return true;
+    }
+    if (typeof encoding === 'function') {
+      return originalStderrWrite(chunk, encoding);
+    }
+    return originalStderrWrite(chunk, encoding, cb);
+  };
+};
+
+// Apply suppression before any Redis connections are created
+suppressRedisVersionWarning();
+
 @Global()
 @Module({
   providers: [
