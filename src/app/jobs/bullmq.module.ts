@@ -1,66 +1,165 @@
-import { Global, Inject, Module, OnModuleDestroy } from '@nestjs/common';
+import {
+  Global,
+  Inject,
+  Module,
+  OnModuleDestroy,
+  OnModuleInit,
+  Logger,
+} from '@nestjs/common';
 import { Queue } from 'bullmq';
-import IORedis from 'ioredis';
+import IORedis, { RedisOptions } from 'ioredis';
+import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
+import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
+// Import worker to ensure it starts processing jobs
+import './workers/session/session.worker';
+
+/**
+ * Helper function to determine if TLS should be used
+ */
+function shouldUseTls(url: string): boolean {
+  const tlsFlag = (process.env.REDIS_TLS || '').toLowerCase();
+
+  // Explicit env flag takes precedence
+  if (['true', '1', 'yes'].includes(tlsFlag)) return true;
+  if (['false', '0', 'no'].includes(tlsFlag)) return false;
+
+  // Infer from URL
+  try {
+    const parsedUrl = new URL(url);
+    if (parsedUrl.protocol === 'rediss:') return true;
+
+    const sslParam =
+      parsedUrl.searchParams.get('ssl') || parsedUrl.searchParams.get('tls');
+    if (sslParam && /^(1|true|yes)$/i.test(sslParam)) return true;
+  } catch {
+    // Invalid URL, default to false
+  }
+
+  return false;
+}
+
+/**
+ * Helper function to check and enforce Redis eviction policy
+ */
+async function checkEvictionPolicy(client: IORedis): Promise<void> {
+  try {
+    const cfg = await client.config('GET', 'maxmemory-policy');
+    const currentPolicy = Array.isArray(cfg) ? (cfg[1] as string) : undefined;
+
+    if (process.env.REDIS_ENFORCE_NOEVICTION === 'true') {
+      if (currentPolicy !== 'noeviction') {
+        await client.config('SET', 'maxmemory-policy', 'noeviction');
+      }
+    } else if (currentPolicy && currentPolicy !== 'noeviction') {
+      // Only warn, don't enforce
+      // Note: This function runs before logger is available, so we use console.warn
+
+      console.warn(
+        `IMPORTANT! Eviction policy is ${currentPolicy}. It should be "noeviction"`,
+      );
+    }
+  } catch {
+    // Redis config command failed, skip policy check
+  }
+}
 
 @Global()
 @Module({
   providers: [
     {
       provide: 'BULLMQ_CONNECTION',
-      useFactory: async () => {
-        const url = process.env.REDIS_BULLMQ_URL || process.env.REDIS_URL || 'redis://127.0.0.1:6379';
-        // Authoritative REDIS_TLS flag: if set truthy => TLS, if falsy => plain. If unset => infer.
-        const tlsFlag = (process.env.REDIS_TLS || '').toLowerCase();
-        let wantsTls: boolean | null = null;
-        if (['true', '1', 'yes'].includes(tlsFlag)) wantsTls = true;
-        if (['false', '0', 'no'].includes(tlsFlag)) wantsTls = false;
-        if (wantsTls === null) {
-          try {
-            const u = new URL(url);
-            if (u.protocol === 'rediss:') wantsTls = true;
-            const sslParam = u.searchParams.get('ssl') || u.searchParams.get('tls');
-            if (wantsTls === null && sslParam && /^(1|true|yes)$/i.test(sslParam)) wantsTls = true;
-          } catch {}
-          if (wantsTls === null) wantsTls = false;
-        }
-        const rejectUnauthorized = process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false';
-        // Determine DB index: env overrides URL; default 0
-        let dbIndex: number | undefined = undefined;
-        const envDb = process.env.REDIS_DB;
-        if (envDb && /^\d+$/.test(envDb)) dbIndex = Number(envDb);
-        if (dbIndex === undefined) {
-          try {
-            const u = new URL(url);
-            const pathDb = u.pathname && u.pathname.length > 1 ? Number(u.pathname.slice(1)) : NaN;
-            if (!Number.isNaN(pathDb)) dbIndex = pathDb;
-            const qpDb = u.searchParams.get('db');
-            if (dbIndex === undefined && qpDb && /^\d+$/.test(qpDb)) dbIndex = Number(qpDb);
-          } catch {}
-        }
-        if (dbIndex === undefined) dbIndex = 0;
-        const options = Object.assign({}, wantsTls ? { tls: { rejectUnauthorized } } : {}, { db: dbIndex });
-        const client = new IORedis(url, options as any);
+      useFactory: async (): Promise<IORedis> => {
+        const url = normalizeRedisUrl(
+          process.env.REDIS_BULLMQ_URL || process.env.REDIS_URL || undefined,
+        );
 
-        // Enforce or warn about eviction policy
-        try {
-          const cfg = await client.config('GET', 'maxmemory-policy');
-          const current = Array.isArray(cfg) ? cfg[1] : undefined;
-          if (process.env.REDIS_ENFORCE_NOEVICTION === 'true') {
-            if (current !== 'noeviction') {
-              await client.config('SET', 'maxmemory-policy', 'noeviction');
+        const wantsTls = shouldUseTls(url);
+        const rejectUnauthorized =
+          process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== 'false';
+        const dbIndex = resolveRedisDbIndex(url, {
+          envNames: ['REDIS_BULLMQ_DB', 'REDIS_DB'],
+        });
+
+        const options: RedisOptions = {
+          ...(wantsTls ? { tls: { rejectUnauthorized } } : {}),
+          db: dbIndex,
+          maxRetriesPerRequest: null, // Required by BullMQ for blocking commands
+          retryStrategy: (times) => {
+            // Retry indefinitely with exponential backoff
+            const delay = Math.min(times * 200, 5000); // Max 5 seconds between retries
+            console.warn(
+              `[BullMQ] Redis connection failed, retrying in ${delay}ms (attempt ${times})`,
+            );
+            return delay; // Keep retrying - never return null
+          },
+          reconnectOnError: (err) => {
+            // Reconnect on any connection-related errors
+            const reconnectErrors = [
+              'READONLY',
+              'ECONNREFUSED',
+              'ETIMEDOUT',
+              'ENOTFOUND',
+              'ECONNRESET',
+              'EPIPE',
+              'Connection lost',
+              'Connection closed',
+            ];
+
+            const shouldReconnect = reconnectErrors.some((errorType) =>
+              err.message.includes(errorType),
+            );
+
+            if (shouldReconnect) {
+              console.warn(
+                `[BullMQ] Redis error detected (${err.message}), attempting reconnection...`,
+              );
+              return true;
             }
-          } else if (current && current !== 'noeviction') {
-            // eslint-disable-next-line no-console
-            console.warn('IMPORTANT! Eviction policy is %s. It should be "noeviction"', current);
-          }
-        } catch {}
+
+            return false;
+          },
+          enableReadyCheck: true,
+          enableOfflineQueue: true, // Queue commands when disconnected
+          connectTimeout: 10000, // 10 second connection timeout
+          keepAlive: 30000, // Send keepalive every 30 seconds
+        };
+
+        const client = new IORedis(url, options);
+
+        // Set up connection event handlers
+        client.on('error', (err) => {
+          console.error(`[BullMQ] Redis connection error: ${err.message}`);
+        });
+
+        client.on('connect', () => {
+          console.log('[BullMQ] Redis connection established');
+        });
+
+        client.on('ready', () => {
+          console.log('[BullMQ] Redis connection ready and operational');
+        });
+
+        client.on('close', () => {
+          console.warn(
+            '[BullMQ] Redis connection closed - will attempt to reconnect',
+          );
+        });
+
+        client.on('reconnecting', (delay: number) => {
+          console.warn(`[BullMQ] Redis reconnecting in ${delay}ms...`);
+        });
+
+        // Check eviction policy (non-blocking)
+        await checkEvictionPolicy(client).catch(() => {
+          // Ignore errors during eviction check - connection might not be ready yet
+        });
 
         return client;
       },
     },
     {
       provide: 'SESSION_QUEUE',
-      useFactory: (connection: IORedis) => {
+      useFactory: (connection: IORedis): Queue => {
         return new Queue('session-jobs', { connection });
       },
       inject: ['BULLMQ_CONNECTION'],
@@ -68,11 +167,78 @@ import IORedis from 'ioredis';
   ],
   exports: ['BULLMQ_CONNECTION', 'SESSION_QUEUE'],
 })
-export class BullmqModule implements OnModuleDestroy {
-  constructor(@Inject('BULLMQ_CONNECTION') private readonly connection: IORedis) {}
-  async onModuleDestroy() {
+export class BullmqModule implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(BullmqModule.name);
+
+  constructor(
+    @Inject('BULLMQ_CONNECTION') private readonly connection: IORedis,
+    @Inject('SESSION_QUEUE') private readonly sessionQueue: Queue,
+  ) {}
+
+  /**
+   * Initialize recurring jobs when module starts
+   */
+  async onModuleInit(): Promise<void> {
+    // Schedule sales count sync job to run every 5 minutes
+    // This syncs Redis sales count to database for all active sessions
+    const syncIntervalMinutes = parseInt(
+      process.env.SALES_SYNC_INTERVAL_MINUTES || '5',
+      10,
+    );
+
+    if (syncIntervalMinutes < 1) {
+      this.logger.warn(
+        'SALES_SYNC_INTERVAL_MINUTES must be >= 1, defaulting to 5 minutes',
+      );
+    }
+
+    const intervalMs = Math.max(syncIntervalMinutes, 1) * 60 * 1000;
+
+    try {
+      // Remove any existing recurring job with the same name to avoid duplicates
+      const repeatableJobs = await this.sessionQueue.getRepeatableJobs();
+      const existingSyncJob = repeatableJobs.find(
+        (job) => job.name === 'sync-sales',
+      );
+
+      if (existingSyncJob) {
+        await this.sessionQueue.removeRepeatableByKey(existingSyncJob.key);
+        this.logger.log('Removed existing sync-sales recurring job');
+      }
+
+      // Add new recurring job
+      await this.sessionQueue.add(
+        'sync-sales',
+        {},
+        {
+          repeat: {
+            every: intervalMs,
+          },
+          removeOnComplete: {
+            age: 3600, // Keep completed jobs for 1 hour
+            count: 10, // Keep last 10 completed jobs
+          },
+          removeOnFail: {
+            age: 86400, // Keep failed jobs for 24 hours
+          },
+        },
+      );
+
+      this.logger.log(
+        `Scheduled sales count sync job to run every ${syncIntervalMinutes} minute(s)`,
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to schedule sales sync job: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+      // Don't throw - allow module to continue even if scheduling fails
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
     await this.connection.quit();
   }
 }
-
-

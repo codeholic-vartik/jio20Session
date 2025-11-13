@@ -1,19 +1,36 @@
 import { Injectable, NestMiddleware } from '@nestjs/common';
-import { NextFunction } from 'express';
+import { NextFunction, Request, Response } from 'express';
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { RateLimiterRedis, RateLimiterRes } from 'rate-limiter-flexible';
+import { IncomingMessage, ServerResponse } from 'http';
 import IORedis from 'ioredis';
+import { RateLimiterRedis, RateLimiterRes } from 'rate-limiter-flexible';
+import { Socket } from 'net';
+import { normalizeRedisUrl } from '../utils/redis-url.util';
 
 @Injectable()
 export class RateLimitMiddleware implements NestMiddleware {
   private limiter: RateLimiterRedis;
 
   constructor() {
-    const redisUrl =
+    const fallbackAuth =
+      process.env.REDIS_USERNAME || process.env.REDIS_PASSWORD
+        ? `${process.env.REDIS_USERNAME || ''}:${
+            process.env.REDIS_PASSWORD || ''
+          }@`
+        : '';
+
+    const fallbackPath =
+      process.env.REDIS_DB && /^\d+$/.test(process.env.REDIS_DB)
+        ? `/${process.env.REDIS_DB}`
+        : '';
+
+    const rawRedisUrl =
       process.env.REDIS_URL ||
-      `redis://${process.env.REDIS_USERNAME || ''}:${process.env.REDIS_PASSWORD || ''}@${
-        process.env.REDIS_HOST || 'localhost'
-      }:${process.env.REDIS_PORT || 6379}/${process.env.REDIS_DB || 0}`;
+      `redis://${fallbackAuth}${process.env.REDIS_HOST || 'localhost'}:${
+        process.env.REDIS_PORT || 6379
+      }${fallbackPath}`;
+
+    const redisUrl = normalizeRedisUrl(rawRedisUrl);
 
     const redis = new IORedis(redisUrl, {
       enableReadyCheck: true,
@@ -24,7 +41,10 @@ export class RateLimitMiddleware implements NestMiddleware {
 
     const points = parseInt(process.env.RATE_LIMIT_POINTS || '100', 10);
     const duration = parseInt(process.env.RATE_LIMIT_DURATION || '60', 10);
-    const blockDuration = parseInt(process.env.RATE_LIMIT_BLOCK_DURATION || '60', 10);
+    const blockDuration = parseInt(
+      process.env.RATE_LIMIT_BLOCK_DURATION || '60',
+      10,
+    );
 
     this.limiter = new RateLimiterRedis({
       storeClient: redis,
@@ -36,44 +56,141 @@ export class RateLimitMiddleware implements NestMiddleware {
     });
   }
 
-  async use(req: any, res: any, next: NextFunction) {
-    const fwdHeader = (req.headers && req.headers['x-forwarded-for']) as string | string[] | undefined;
-    const fwd = Array.isArray(fwdHeader) ? fwdHeader.join(',') : (fwdHeader || '');
-    const fwdFirst = fwd.split(',')[0]?.trim() || '';
-    const ip = fwdFirst || req.ip || (req.socket && req.socket.remoteAddress) || '';
-    const key = ip || 'anon';
+  async use(
+    req: Request | FastifyRequest,
+    res: Response | FastifyReply | ServerResponse,
+    next: NextFunction,
+  ): Promise<void> {
+    const url = this.getRequestUrl(req);
+    if (this.shouldBypassUrl(url)) {
+      next();
+      return;
+    }
+
+    const forwardedFor = this.getForwardedFor(req);
+    const clientIp = this.getClientIp(req, forwardedFor);
+    const key = clientIp || 'anon';
 
     try {
       await this.limiter.consume(key);
       next();
-    } catch (err) {
-      // Only block when the limit is actually exceeded
+    } catch (err: unknown) {
       if (err instanceof RateLimiterRes) {
         const body = { message: 'Too Many Requests. Please try again later.' };
-        // Fastify-style reply
-        if (typeof res.code === 'function' && typeof res.send === 'function') {
+
+        if (this.isFastifyReply(res)) {
           res.code(429).send(body);
           return;
         }
-        // Express-style response
-        if (typeof res.status === 'function' && typeof res.json === 'function') {
+
+        if (this.isExpressResponse(res)) {
           res.status(429).json(body);
           return;
         }
-        // Low-level Node response (fallback)
-        try {
+
+        if (this.isServerResponse(res)) {
           res.statusCode = 429;
-          if (typeof res.setHeader === 'function') {
-            res.setHeader('content-type', 'application/json');
-          }
+          res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify(body));
-        } catch {
-          next();
+          return;
         }
-        return;
       }
-      // On Redis/store errors, fail open so users aren't blocked
+
       next();
     }
+  }
+
+  private getRequestUrl(req: Request | FastifyRequest): string {
+    if ('originalUrl' in req && typeof req.originalUrl === 'string') {
+      return req.originalUrl;
+    }
+
+    if (typeof req.url === 'string') {
+      return req.url;
+    }
+
+    if ('raw' in req && this.isIncomingMessage(req.raw)) {
+      return req.raw.url ?? '';
+    }
+
+    return '';
+  }
+
+  private shouldBypassUrl(url: string): boolean {
+    return (
+      url === '/docs' ||
+      url.startsWith('/docs') ||
+      url.startsWith('/swagger') ||
+      url.startsWith('/ws-docs')
+    );
+  }
+
+  private getForwardedFor(
+    req: Request | FastifyRequest,
+  ): string | string[] | undefined {
+    return req.headers?.['x-forwarded-for'];
+  }
+
+  private getClientIp(
+    req: Request | FastifyRequest,
+    forwardedFor: string | string[] | undefined,
+  ): string {
+    const consolidatedForwarded = Array.isArray(forwardedFor)
+      ? forwardedFor.join(',')
+      : forwardedFor || '';
+    const forwardedFirst = consolidatedForwarded.split(',')[0]?.trim();
+    if (forwardedFirst) {
+      return forwardedFirst;
+    }
+
+    if ('ip' in req && typeof req.ip === 'string' && req.ip) {
+      return req.ip;
+    }
+
+    const socket = this.getSocket(req);
+    return socket?.remoteAddress ?? '';
+  }
+
+  private getSocket(req: Request | FastifyRequest): Socket | undefined {
+    if ('socket' in req && req.socket) {
+      return req.socket;
+    }
+
+    if ('raw' in req && this.isIncomingMessage(req.raw)) {
+      return req.raw.socket ?? undefined;
+    }
+
+    return undefined;
+  }
+
+  private isIncomingMessage(value: unknown): value is IncomingMessage {
+    return value instanceof IncomingMessage;
+  }
+
+  private isFastifyReply(
+    res: Response | FastifyReply | ServerResponse,
+  ): res is FastifyReply {
+    return (
+      typeof (res as FastifyReply).code === 'function' &&
+      typeof (res as FastifyReply).send === 'function'
+    );
+  }
+
+  private isExpressResponse(
+    res: Response | FastifyReply | ServerResponse,
+  ): res is Response {
+    return (
+      typeof (res as Response).status === 'function' &&
+      typeof (res as Response).json === 'function'
+    );
+  }
+
+  private isServerResponse(
+    res: Response | FastifyReply | ServerResponse,
+  ): res is ServerResponse {
+    return (
+      typeof (res as ServerResponse).setHeader === 'function' &&
+      typeof (res as ServerResponse).end === 'function'
+    );
   }
 }

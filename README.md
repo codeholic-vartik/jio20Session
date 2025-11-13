@@ -1,98 +1,76 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+## Jio20 Session Platform
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend services for managing live session lifecycles, real-time engagement, and sales synchronization for the Jio20 experience. Built with NestJS, BullMQ, Prisma, and Redis to deliver resilient background processing and websocket updates.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Features
 
-## Description
+- Session lifecycle orchestration (creation, rotation, live transitions)
+- Redis-driven pub/sub for participant and sales updates
+- BullMQ workers with configurable batch processing (`sync-sales` handler)
+- Prisma-powered Postgres integration with multi-schema support
+- WebSocket gateway for pushing real-time session metrics
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
+## Getting Started
 
 ```bash
-$ npm install
+# install dependencies
+npm install
+
+# run database migrations if needed
+npx prisma migrate deploy
+
+# development server
+npm run start:dev
+
+# production build
+npm run build && npm run start:prod
 ```
 
-## Compile and run the project
+For hosting with `pm2`, follow `docs/DEPLOYMENT_PM2.md`.
+
+## Configuration
+
+Set the following environment variables (see `src/common/config/config.module.ts` for validation):
+
+| Variable                        | Description                                      | Default              |
+| ------------------------------- | ------------------------------------------------ | -------------------- |
+| `DATABASE_URL`                  | Postgres connection string                       | —                    |
+| `REDIS_URL`                     | Redis connection for pub/sub                     | —                    |
+| `REDIS_BULLMQ_URL`              | Dedicated Redis connection for BullMQ (optional) | `REDIS_URL` fallback |
+| `SESSION_SYNC_SALES_BATCH_SIZE` | Batch size for sales sync worker (1-1000)        | `50`                 |
+| `LOG_LEVEL`                     | Application log level                            | `info`               |
+| `WEBSOCKET_NAMESPACE`           | Namespace for socket gateway                     | `/ws/v1/session/`    |
+
+Create a `.env` file at the project root:
+
+```env
+DATABASE_URL=postgresql://user:pass@host:5432/db?schema=session
+REDIS_URL=redis://localhost:6379
+SESSION_SYNC_SALES_BATCH_SIZE=100
+```
+
+## Project Structure
+
+- `src/app/jobs/` – BullMQ queues, workers, and job handlers
+- `src/app/session/` – Session REST APIs and business logic
+- `src/app/socket/` – WebSocket adapters and gateways
+- `src/common/` – Shared configuration, logging, and utilities
+- `prisma/` – Prisma schema and database migrations
+
+## Development Scripts
 
 ```bash
-# development
-$ npm run start
+# run unit tests
+npm run test
 
-# watch mode
-$ npm run start:dev
+# e2e test suite
+npm run test:e2e
 
-# production mode
-$ npm run start:prod
+# lint and format
+npm run lint
+npm run format
 ```
 
-## Run tests
+## Developer
 
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- Author: Vartik Anand

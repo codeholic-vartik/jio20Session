@@ -669,9 +669,7 @@ model taxonomy_terms {
   product_taxonomy       product_taxonomy         @relation(fields: [taxonomy_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   taxonomy_terms_coupons taxonomy_terms_coupons[]
   session_coupons        session_coupons[]
-  session_profiles       session_profiles[]
   session_taxonomy_terms session_taxonomy_terms[]
-  sessions               sessions[]
 
   @@unique([taxonomy_id, slug], map: "uq_taxonomy_slug")
   @@index([id], map: "ix_inventory_taxonomy_terms_id")
@@ -798,7 +796,6 @@ model orders {
   address_meta       Json?               @db.Json
   created_at         DateTime            @default(now()) @db.Timestamptz(6)
   updated_at         DateTime            @default(now()) @db.Timestamptz(6)
-  session_id         Int?
   order_items        order_items[]
   order_services     order_services[]
   customer_addresses customer_addresses? @relation(fields: [address_id], references: [id], onUpdate: NoAction)
@@ -892,35 +889,32 @@ model session_profiles {
   max_sessions           Int?
   sessions_count         Int
   sales_trigger_count    Int?
+  session_duration_value Int?
+  session_duration_unit  String?                  @db.VarChar(10)
   reward_type            String                   @db.VarChar(50)
   reward_value           Decimal?                 @db.Decimal(10, 2)
   reward_currency        String?                  @db.VarChar(10)
   reward_product_id      Int?
   reward_coupon_id       Int?
-  taxonomy_term_id       Int?
   reward_metadata        Json?                    @db.Json
   display_config         Json?                    @db.Json
+  priority_position      Int
+  is_active              Boolean
+  is_deleted             Boolean
   created_by             Int?
   created_at             DateTime                 @default(now()) @db.Timestamptz(6)
   updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
-  priority_position      Int                      @default(10)
-  is_active              Boolean                  @default(true)
-  is_deleted             Boolean                  @default(false)
-  session_duration_value Int?
-  session_duration_unit  String?                  @db.VarChar(10)
   backendusers           backendusers?            @relation(fields: [created_by], references: [id], onUpdate: NoAction)
   coupons                coupons?                 @relation(fields: [reward_coupon_id], references: [id], onUpdate: NoAction)
   products               products?                @relation(fields: [reward_product_id], references: [id], onUpdate: NoAction)
-  taxonomy_terms         taxonomy_terms?          @relation(fields: [taxonomy_term_id], references: [id], onUpdate: NoAction)
   session_taxonomy_terms session_taxonomy_terms[]
   sessions               sessions[]
 
-  @@index([is_active], map: "idx_session_profiles_is_active")
-  @@index([is_deleted], map: "idx_session_profiles_is_deleted")
-  @@index([priority_position], map: "idx_session_profiles_priority_position")
   @@index([id], map: "ix_session_session_profiles_id")
-  @@index([taxonomy_term_id], map: "ix_session_session_profiles_taxonomy_term_id")
   @@index([title], map: "ix_session_session_profiles_title")
+  @@index([is_active], map: "ix_session_session_profiles_is_active")
+  @@index([is_deleted], map: "ix_session_session_profiles_is_deleted")
+  @@index([priority_position], map: "ix_session_session_profiles_priority_position")
   @@schema("session")
 }
 
@@ -989,14 +983,11 @@ model sessions {
   auto_close_on_full        Boolean
   created_at                DateTime               @default(now()) @db.Timestamptz(6)
   updated_at                DateTime               @default(now()) @db.Timestamptz(6)
-  taxonomy_term_id          Int?
   session_coupons           session_coupons[]
   session_participants      session_participants[]
   session_rewards           session_rewards[]
   session_profiles          session_profiles       @relation(fields: [session_profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  taxonomy_terms            taxonomy_terms?        @relation(fields: [taxonomy_term_id], references: [id], onUpdate: NoAction)
 
-  @@index([taxonomy_term_id], map: "idx_sessions_taxonomy_term_id")
   @@index([end_time], map: "ix_session_sessions_end_time")
   @@index([id], map: "ix_session_sessions_id")
   @@index([session_profile_id], map: "ix_session_sessions_session_profile_id")

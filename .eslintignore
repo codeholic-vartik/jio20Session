@@ -1,0 +1,10 @@
+# Generated and external
+node_modules/
+dist/
+coverage/
+
+# Tooling configs not part of TS project
+commitlint.config.cjs
+.commitlintrc.cjs
+.husky/
+.changeset/
