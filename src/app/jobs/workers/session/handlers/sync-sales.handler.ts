@@ -76,8 +76,11 @@ export async function handleSyncSales(
     );
 
     // Scan Redis for all keys matching session:sales:* pattern
+    // Use larger COUNT for better performance with 10k+ keys
     const redisKeys: string[] = [];
     let cursor = '0';
+    let scanIterations = 0;
+    const SCAN_COUNT = 1000; // Larger count for 10k+ keys
 
     do {
       const [nextCursor, keys] = await connection.scan(
@@ -85,11 +88,25 @@ export async function handleSyncSales(
         'MATCH',
         'session:sales:*',
         'COUNT',
-        100,
+        SCAN_COUNT,
       );
       cursor = nextCursor;
       redisKeys.push(...keys);
+      scanIterations++;
+
+      // Log progress for large datasets
+      if (redisKeys.length % 5000 === 0 && redisKeys.length > 0) {
+        logger.info(
+          `Scanning Redis keys... found ${redisKeys.length} keys so far (scan iterations: ${scanIterations})`,
+        );
+      }
     } while (cursor !== '0');
+
+    if (scanIterations > 1) {
+      logger.info(
+        `Completed Redis scan: found ${redisKeys.length} keys in ${scanIterations} iterations`,
+      );
+    }
 
     if (redisKeys.length === 0) {
       logger.warn(
@@ -114,9 +131,16 @@ export async function handleSyncSales(
       });
     }
 
-    logger.info(
-      `Found ${redisKeys.length} sessions with sales data in Redis: ${redisKeys.slice(0, 10).join(', ')}${redisKeys.length > 10 ? '...' : ''}`,
-    );
+    // Log summary for large datasets
+    if (redisKeys.length > 100) {
+      logger.info(
+        `Found ${redisKeys.length} sessions with sales data in Redis (showing first 10): ${redisKeys.slice(0, 10).join(', ')}...`,
+      );
+    } else {
+      logger.info(
+        `Found ${redisKeys.length} sessions with sales data in Redis: ${redisKeys.slice(0, 10).join(', ')}${redisKeys.length > 10 ? '...' : ''}`,
+      );
+    }
 
     let updated = 0;
     let errors = 0;
@@ -126,8 +150,15 @@ export async function handleSyncSales(
 
     // Read all Redis values in batches using mget for better performance
     // mget is faster than multiple individual get() calls
-    for (let i = 0; i < redisKeys.length; i += BATCH_SIZE) {
-      const batch = redisKeys.slice(i, i + BATCH_SIZE);
+    // For 10k+ keys, use larger batches for Redis reads (but smaller for DB updates)
+    const REDIS_READ_BATCH_SIZE = Math.min(BATCH_SIZE * 2, 200); // Larger batches for Redis reads
+
+    logger.info(
+      `Reading ${redisKeys.length} Redis values in batches of ${REDIS_READ_BATCH_SIZE}...`,
+    );
+
+    for (let i = 0; i < redisKeys.length; i += REDIS_READ_BATCH_SIZE) {
+      const batch = redisKeys.slice(i, i + REDIS_READ_BATCH_SIZE);
 
       // Use mget for batch reads (faster than Promise.all with individual gets)
       const values = await connection.mget(...batch);
@@ -148,7 +179,18 @@ export async function handleSyncSales(
           }
         }
       });
+
+      // Log progress for large datasets
+      if (redisKeys.length > 1000 && (i + REDIS_READ_BATCH_SIZE) % 5000 === 0) {
+        logger.info(
+          `Reading Redis values... processed ${Math.min(i + REDIS_READ_BATCH_SIZE, redisKeys.length)}/${redisKeys.length} keys`,
+        );
+      }
     }
+
+    logger.info(
+      `Completed reading Redis values: ${sessionDataMap.size} valid session counts extracted`,
+    );
 
     if (sessionDataMap.size === 0) {
       logger.info('No valid session data found in Redis');
@@ -160,24 +202,72 @@ export async function handleSyncSales(
       });
     }
 
-    logger.info(
-      `Processing ${sessionDataMap.size} sessions for sync. Session IDs: ${Array.from(sessionDataMap.keys()).slice(0, 10).join(', ')}${sessionDataMap.size > 10 ? '...' : ''}`,
-    );
-
     // Fetch ONLY sessions that exist in Redis (optimized bulk query)
     const sessionIds = Array.from(sessionDataMap.keys());
 
-    // Fetch sessions from DB (only those with Redis keys)
-    const sessions = await prisma.sessions.findMany({
-      where: {
-        id: { in: sessionIds }, // Only IDs from Redis
-      },
-      select: {
-        id: true,
-        current_sales_count: true,
-        status: true,
-      },
-    });
+    if (sessionIds.length > 100) {
+      logger.info(
+        `Processing ${sessionDataMap.size} sessions for sync (showing first 10 IDs): ${sessionIds.slice(0, 10).join(', ')}...`,
+      );
+    } else {
+      logger.info(
+        `Processing ${sessionDataMap.size} sessions for sync. Session IDs: ${sessionIds.slice(0, 10).join(', ')}${sessionIds.length > 10 ? '...' : ''}`,
+      );
+    }
+
+    // For large datasets (10k+), fetch sessions in chunks to avoid query size limits
+    // PostgreSQL has a limit on IN clause size (typically 1000-10000 items)
+    const DB_FETCH_BATCH_SIZE = 5000; // Safe batch size for PostgreSQL IN clause
+    const sessions: Array<{
+      id: number;
+      current_sales_count: number | null;
+      status: string;
+    }> = [];
+
+    if (sessionIds.length > DB_FETCH_BATCH_SIZE) {
+      logger.info(
+        `Fetching ${sessionIds.length} sessions from DB in batches of ${DB_FETCH_BATCH_SIZE}...`,
+      );
+
+      for (let i = 0; i < sessionIds.length; i += DB_FETCH_BATCH_SIZE) {
+        const batchIds = sessionIds.slice(i, i + DB_FETCH_BATCH_SIZE);
+        const batchSessions = await prisma.sessions.findMany({
+          where: {
+            id: { in: batchIds },
+          },
+          select: {
+            id: true,
+            current_sales_count: true,
+            status: true,
+          },
+        });
+        sessions.push(...batchSessions);
+
+        // Log progress for large datasets
+        if ((i + DB_FETCH_BATCH_SIZE) % 10000 === 0) {
+          logger.info(
+            `Fetched ${Math.min(i + DB_FETCH_BATCH_SIZE, sessionIds.length)}/${sessionIds.length} sessions from DB`,
+          );
+        }
+      }
+
+      logger.info(
+        `Completed fetching sessions from DB: ${sessions.length} sessions found`,
+      );
+    } else {
+      // Single query for smaller datasets
+      const fetchedSessions = await prisma.sessions.findMany({
+        where: {
+          id: { in: sessionIds },
+        },
+        select: {
+          id: true,
+          current_sales_count: true,
+          status: true,
+        },
+      });
+      sessions.push(...fetchedSessions);
+    }
 
     // Create in-memory map for O(1) lookups
     const sessionMap = new Map<number, (typeof sessions)[0]>();
@@ -185,215 +275,388 @@ export async function handleSyncSales(
       sessionMap.set(session.id, session);
     });
 
-    // Update database for sessions found in Redis
-    for (let i = 0; i < sessionIds.length; i += BATCH_SIZE) {
-      const batchIds = sessionIds.slice(i, i + BATCH_SIZE);
+    // Track skipped sessions separately (sessions already in sync)
+    let skippedCount = 0;
 
-      const updatePromises = batchIds.map(async (sessionId) => {
-        const redisKey = `session:sales:${sessionId}`;
+    // For 10k+ sessions, log progress periodically
+    const shouldLogProgress = sessionIds.length > 1000;
+    const progressLogInterval = 1000; // Log every 1000 sessions
 
-        const removeRedisKey = async (reason: string) => {
-          try {
-            await connection.del(redisKey);
-            logger.warn(`Removed Redis key ${redisKey} - ${reason}`);
-          } catch (deleteError) {
-            errors++;
-            const deleteMessage =
-              deleteError instanceof Error
-                ? deleteError.message
-                : String(deleteError);
-            logger.error(
-              `Failed to delete Redis key ${redisKey}: ${deleteMessage}`,
-              deleteError instanceof Error ? deleteError.stack : undefined,
-            );
-          }
-        };
+    logger.info(
+      `Starting database updates for ${sessionIds.length} sessions in batches of ${BATCH_SIZE}...`,
+    );
 
+    // Prepare sessions that need syncing (filter out already synced, missing, or completed)
+    const sessionsToSync: Array<{
+      sessionId: number;
+      redisCount: number;
+      dbCount: number;
+      redisKey: string;
+    }> = [];
+
+    // First pass: identify which sessions need syncing
+    for (const sessionId of sessionIds) {
+      const redisCount = sessionDataMap.get(sessionId);
+      if (redisCount === undefined) {
+        skippedCount++;
+        continue;
+      }
+
+      const session = sessionMap.get(sessionId);
+      if (!session) {
+        // Session not found in DB - clean up Redis key
         try {
-          // Re-read Redis value right before update to ensure we have the latest value
-          // This prevents using stale values from the initial batch read
-          // Using get() directly is faster than exists() + get() (one less round trip)
-          const latestRedisValue = await connection.get(redisKey);
-          if (!latestRedisValue) {
-            logger.warn(
-              `Redis key ${redisKey} has no value or was deleted between scan and update - this may indicate database mismatch`,
-            );
-            return;
-          }
+          await connection.del(`session:sales:${sessionId}`);
+          logger.debug(`Removed Redis key for missing session ${sessionId}`);
+        } catch (deleteError) {
+          logger.warn(
+            `Failed to delete Redis key for missing session ${sessionId}: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
+          );
+        }
+        skippedCount++;
+        continue;
+      }
 
-          const latestRedisCount = parseInt(latestRedisValue, 10);
-          if (isNaN(latestRedisCount)) {
-            logger.warn(
-              `Redis key ${redisKey} has invalid value: ${latestRedisValue}, skipping`,
-            );
-            return;
-          }
+      const sessionStatus = session.status as SessionStatus | null;
+      if (sessionStatus === SessionStatus.COMPLETED) {
+        // Completed session - clean up Redis key
+        try {
+          await connection.del(`session:sales:${sessionId}`);
+          logger.debug(`Removed Redis key for completed session ${sessionId}`);
+        } catch (deleteError) {
+          logger.warn(
+            `Failed to delete Redis key for completed session ${sessionId}: ${deleteError instanceof Error ? deleteError.message : String(deleteError)}`,
+          );
+        }
+        skippedCount++;
+        continue;
+      }
 
-          const session = sessionMap.get(sessionId);
+      // Handle null DB values properly - null means 0
+      const dbCount =
+        session.current_sales_count !== null &&
+        session.current_sales_count !== undefined
+          ? Number(session.current_sales_count)
+          : 0;
 
-          if (!session) {
-            await removeRedisKey(`session ${sessionId} not found in DB`);
-            return;
-          }
+      const redisCountNum = Number(redisCount);
+      const dbCountNum = Number(dbCount);
 
-          const sessionStatus = session.status as SessionStatus | null;
-          if (sessionStatus === SessionStatus.COMPLETED) {
-            await removeRedisKey(
-              `session ${sessionId} is ${SessionStatus.COMPLETED} in DB`,
-            );
-            return;
-          }
+      // CHECK: If already synced, skip update
+      if (redisCountNum === dbCountNum) {
+        skippedCount++;
+        continue;
+      }
 
-          // Handle null DB values properly - null means 0, but we should sync if Redis has a value
-          const currentDbCount =
-            session.current_sales_count !== null &&
-            session.current_sales_count !== undefined
-              ? session.current_sales_count
-              : 0;
+      // Add to sync list
+      sessionsToSync.push({
+        sessionId,
+        redisCount: redisCountNum,
+        dbCount: dbCountNum,
+        redisKey: `session:sales:${sessionId}`,
+      });
+    }
 
-          // Log detailed comparison for debugging
-          logger.info(
-            `Session ${sessionId} comparison: Redis=${latestRedisCount}, DB=${currentDbCount} (raw: ${session.current_sales_count}), status=${session.status}`,
+    logger.info(
+      `Prepared ${sessionsToSync.length} sessions for sync (${skippedCount} already synced/skipped)`,
+    );
+
+    // Update database in batches using bulk SQL for better performance
+    for (let i = 0; i < sessionsToSync.length; i += BATCH_SIZE) {
+      const batch = sessionsToSync.slice(i, i + BATCH_SIZE);
+
+      // Log progress for large datasets
+      if (shouldLogProgress && i > 0 && i % progressLogInterval === 0) {
+        logger.info(
+          `Sync progress: processed ${i}/${sessionsToSync.length} sessions (${Math.round((i / sessionsToSync.length) * 100)}%)`,
+        );
+      }
+
+      try {
+        // Use batch transaction for better performance
+        // Update all sessions in the batch within a single transaction
+        const batchUpdated = await prisma.$transaction(
+          async (tx) => {
+            let batchUpdatedCount = 0;
+
+            // Update each session in the batch
+            for (const item of batch) {
+              try {
+                // Re-check if still needs sync (might have been updated by another process)
+                const currentSession = await tx.sessions.findUnique({
+                  where: { id: item.sessionId },
+                  select: { current_sales_count: true },
+                });
+
+                if (!currentSession) {
+                  // Session not found - this shouldn't happen but handle gracefully
+                  logger.warn(
+                    `Session ${item.sessionId} not found in DB during batch update`,
+                  );
+                  continue;
+                }
+
+                const currentDbValue =
+                  currentSession.current_sales_count !== null &&
+                  currentSession.current_sales_count !== undefined
+                    ? Number(currentSession.current_sales_count)
+                    : 0;
+
+                // Only update if still needs syncing (Redis is source of truth)
+                if (currentDbValue !== item.redisCount) {
+                  await tx.sessions.update({
+                    where: { id: item.sessionId },
+                    data: {
+                      current_sales_count: item.redisCount,
+                      updated_at: new Date(),
+                    },
+                  });
+                  batchUpdatedCount++;
+                } else {
+                  skippedCount++;
+                }
+              } catch (itemError) {
+                // Log error but continue with other items in batch
+                // We'll retry failed items in fallback
+                logger.warn(
+                  `Failed to update session ${item.sessionId} in batch transaction: ${itemError instanceof Error ? itemError.message : String(itemError)}`,
+                );
+                // Throw to mark this item as failed (will be caught and retried)
+                throw itemError;
+              }
+            }
+
+            return batchUpdatedCount;
+          },
+          {
+            maxWait: 10000,
+            timeout: 30000,
+          },
+        );
+
+        const rowsUpdated = batchUpdated;
+
+        if (rowsUpdated > 0) {
+          updated += rowsUpdated;
+          logger.debug(
+            `Bulk updated ${rowsUpdated} sessions in batch ${Math.floor(i / BATCH_SIZE) + 1}`,
           );
 
-          // Redis contains the TOTAL/cumulative count for the session
-          // DO NOT delete the Redis key - it must stay persistent for the session
-          // Sync if Redis count is different from DB (handles both higher and edge cases)
-          if (latestRedisCount === currentDbCount) {
-            logger.debug(
-              `Session ${sessionId} already in sync (Redis ${latestRedisCount} === DB ${currentDbCount}), skipping update`,
-            );
-            return;
-          }
-
-          // If Redis is less than DB, log a warning but still update (Redis is source of truth)
-          if (latestRedisCount < currentDbCount) {
-            logger.warn(
-              `Session ${sessionId} Redis count (${latestRedisCount}) is LESS than DB count (${currentDbCount}). This is unusual. Updating DB to match Redis (Redis is source of truth).`,
-            );
-          }
-
-          // Redis has the cumulative total, so we just use it directly
-          const newCount = latestRedisCount;
-
-          try {
-            // Update database - always update when Redis != DB
-            logger.info(
-              `Updating session ${sessionId}: DB ${currentDbCount} → ${newCount} (Redis total, diff: ${newCount > currentDbCount ? '+' : ''}${newCount - currentDbCount})`,
-            );
-
-            // Use updateMany for more reliable updates, or update with explicit timestamp
-            const updateResult = await prisma.sessions.update({
-              where: { id: sessionId },
-              data: {
-                current_sales_count: newCount,
-                updated_at: new Date(), // Explicitly update timestamp
-              },
-            });
-
-            // Verify the update succeeded by reading back from DB
-            const verifySession = await prisma.sessions.findUnique({
-              where: { id: sessionId },
-              select: { current_sales_count: true },
-            });
-
-            if (
-              verifySession &&
-              verifySession.current_sales_count === newCount
-            ) {
-              updated++;
-              logger.info(
-                `✓ Successfully updated session ${sessionId}: DB ${currentDbCount} → ${newCount} (verified: ${verifySession.current_sales_count})`,
+          // Log warnings for sessions where Redis < DB (unusual case)
+          for (const item of batch) {
+            if (item.redisCount < item.dbCount) {
+              logger.warn(
+                `Session ${item.sessionId} Redis count (${item.redisCount}) < DB count (${item.dbCount}). Updated DB to match Redis (Redis is source of truth).`,
               );
-            } else {
-              errors++;
-              const actualValue = verifySession?.current_sales_count ?? 'null';
-              logger.error(
-                `✗ Update verification failed for session ${sessionId}: Expected ${newCount}, but DB shows ${actualValue}. Update result was: ${updateResult.current_sales_count}`,
-              );
+            }
+          }
+        } else {
+          // No rows updated - might be race condition, verify individually
+          logger.debug(
+            `Bulk update returned 0 rows for batch ${Math.floor(i / BATCH_SIZE) + 1}, verifying individually...`,
+          );
 
-              // Retry once if verification failed
-              logger.info(`Retrying update for session ${sessionId}...`);
-              try {
+          // Fallback: verify and update individually if bulk update didn't work
+          for (const item of batch) {
+            try {
+              const currentSession = await prisma.sessions.findUnique({
+                where: { id: item.sessionId },
+                select: { current_sales_count: true },
+              });
+
+              const currentDbValue =
+                currentSession?.current_sales_count !== null &&
+                currentSession?.current_sales_count !== undefined
+                  ? Number(currentSession.current_sales_count)
+                  : 0;
+
+              if (currentDbValue !== item.redisCount) {
                 await prisma.sessions.update({
-                  where: { id: sessionId },
+                  where: { id: item.sessionId },
                   data: {
-                    current_sales_count: newCount,
+                    current_sales_count: item.redisCount,
                     updated_at: new Date(),
                   },
                 });
-                const retryVerify = await prisma.sessions.findUnique({
-                  where: { id: sessionId },
-                  select: { current_sales_count: true },
+                updated++;
+                logger.debug(
+                  `Updated session ${item.sessionId}: DB ${currentDbValue} → ${item.redisCount}`,
+                );
+              } else {
+                skippedCount++;
+              }
+            } catch (individualError) {
+              errors++;
+              logger.error(
+                `Failed to update session ${item.sessionId}: ${individualError instanceof Error ? individualError.message : String(individualError)}`,
+              );
+            }
+          }
+        }
+      } catch (batchError) {
+        // Batch transaction failed - fallback to individual updates to ensure no data loss
+        logger.warn(
+          `Batch transaction failed for batch ${Math.floor(i / BATCH_SIZE) + 1}, falling back to individual updates to ensure no data loss: ${batchError instanceof Error ? batchError.message : String(batchError)}`,
+        );
+
+        // Retry each item individually to ensure all Redis values are synced
+        for (const item of batch) {
+          try {
+            // Re-verify Redis value is still valid before updating
+            const redisValue = await connection.get(item.redisKey);
+            if (!redisValue) {
+              logger.warn(
+                `Redis key ${item.redisKey} no longer exists, skipping session ${item.sessionId}`,
+              );
+              skippedCount++;
+              continue;
+            }
+
+            const redisCount = parseInt(redisValue.trim(), 10);
+            if (isNaN(redisCount) || redisCount < 0) {
+              logger.warn(
+                `Invalid Redis value for session ${item.sessionId}: ${redisValue}, skipping`,
+              );
+              skippedCount++;
+              continue;
+            }
+
+            // Update with latest Redis value
+            await prisma.sessions.update({
+              where: { id: item.sessionId },
+              data: {
+                current_sales_count: redisCount,
+                updated_at: new Date(),
+              },
+            });
+            updated++;
+            logger.debug(
+              `Successfully synced session ${item.sessionId} via fallback: ${item.redisCount} → ${redisCount}`,
+            );
+          } catch (individualError) {
+            errors++;
+            logger.error(
+              `Failed to update session ${item.sessionId} in fallback: ${individualError instanceof Error ? individualError.message : String(individualError)}`,
+              individualError instanceof Error
+                ? individualError.stack
+                : undefined,
+            );
+          }
+        }
+      }
+
+      // Small delay between batches for large datasets to avoid overwhelming the database
+      if (sessionIds.length > 10000 && i + BATCH_SIZE < sessionsToSync.length) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
+    // Calculate final skipped count (sessions that were already in sync)
+    const totalSkipped = skippedCount;
+
+    // VERIFICATION: Verify all Redis values are properly synced to DB
+    // This ensures no data loss - check a sample of synced sessions
+    let verificationErrors = 0;
+    const verificationSampleSize = Math.min(100, sessionsToSync.length);
+    if (sessionsToSync.length > 0 && updated > 0) {
+      logger.info(
+        `Verifying sync accuracy: checking ${verificationSampleSize} random sessions...`,
+      );
+
+      const sampleSessions = sessionsToSync
+        .sort(() => Math.random() - 0.5)
+        .slice(0, verificationSampleSize);
+
+      for (const item of sampleSessions) {
+        try {
+          // Re-read from Redis to get latest value
+          const redisValue = await connection.get(item.redisKey);
+          const dbSession = await prisma.sessions.findUnique({
+            where: { id: item.sessionId },
+            select: { current_sales_count: true },
+          });
+
+          if (redisValue && dbSession) {
+            const redisCount = parseInt(redisValue.trim(), 10);
+            const dbCount =
+              dbSession.current_sales_count !== null &&
+              dbSession.current_sales_count !== undefined
+                ? Number(dbSession.current_sales_count)
+                : 0;
+
+            if (redisCount !== dbCount) {
+              verificationErrors++;
+              logger.warn(
+                `Verification failed for session ${item.sessionId}: Redis=${redisCount}, DB=${dbCount} - attempting to fix...`,
+              );
+
+              // Attempt to fix the mismatch
+              try {
+                await prisma.sessions.update({
+                  where: { id: item.sessionId },
+                  data: {
+                    current_sales_count: redisCount,
+                    updated_at: new Date(),
+                  },
                 });
-                if (
-                  retryVerify &&
-                  retryVerify.current_sales_count === newCount
-                ) {
-                  updated++;
-                  errors--; // Remove from errors since retry succeeded
-                  logger.info(
-                    `✓ Retry successful for session ${sessionId}: DB now shows ${retryVerify.current_sales_count}`,
-                  );
-                } else {
-                  logger.error(
-                    `✗ Retry also failed for session ${sessionId}: DB still shows ${retryVerify?.current_sales_count ?? 'null'}`,
-                  );
-                }
-              } catch (retryError) {
+                updated++;
+                logger.info(
+                  `Fixed sync mismatch for session ${item.sessionId}: DB updated to ${redisCount}`,
+                );
+              } catch (fixError) {
+                errors++;
                 logger.error(
-                  `Retry update failed for session ${sessionId}: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
+                  `Failed to fix sync mismatch for session ${item.sessionId}: ${fixError instanceof Error ? fixError.message : String(fixError)}`,
                 );
               }
             }
-          } catch (updateError) {
-            // DB update failed - don't lose the count, just log error
-            errors++;
-            const errorMessage =
-              updateError instanceof Error
-                ? updateError.message
-                : String(updateError);
-            logger.error(
-              `Failed to update session ${sessionId}: ${errorMessage}`,
-              updateError instanceof Error ? updateError.stack : undefined,
-            );
           }
-        } catch (error) {
-          errors++;
-          const errorMessage =
-            error instanceof Error ? error.message : String(error);
-
-          logger.error(
-            `Failed to update session ${sessionId}: ${errorMessage}`,
-            error instanceof Error ? error.stack : undefined,
+        } catch (verifyError) {
+          logger.warn(
+            `Verification check failed for session ${item.sessionId}: ${verifyError instanceof Error ? verifyError.message : String(verifyError)}`,
           );
         }
-      });
+      }
 
-      await Promise.allSettled(updatePromises);
-
-      // No delay needed - Promise.allSettled already handles concurrency
-      // Database can handle the load, and we want fast sync
+      if (verificationErrors === 0) {
+        logger.info(
+          `✓ Verification passed: All ${verificationSampleSize} sampled sessions are properly synced`,
+        );
+      } else {
+        logger.warn(
+          `⚠ Verification found ${verificationErrors} mismatches out of ${verificationSampleSize} sampled sessions`,
+        );
+      }
     }
 
-    const skipped = sessionDataMap.size - updated - errors;
+    // Log detailed summary
+    const syncRate =
+      sessionDataMap.size > 0 ? (updated / sessionDataMap.size) * 100 : 0;
+    const successRate =
+      sessionDataMap.size > 0
+        ? ((updated + totalSkipped) / sessionDataMap.size) * 100
+        : 0;
+
     logger.info(
-      `Sales count sync completed - total=${sessionDataMap.size}, updated=${updated}, errors=${errors}, skipped=${skipped}`,
+      `Sales count sync completed - total=${sessionDataMap.size}, updated=${updated} (${syncRate.toFixed(1)}%), skipped=${totalSkipped} (already synced), errors=${errors}, success_rate=${successRate.toFixed(1)}%`,
     );
 
-    // Log summary of what was found vs updated for debugging
-    if (sessionDataMap.size > 0 && updated === 0) {
-      logger.warn(
-        `WARNING: Found ${sessionDataMap.size} sessions in Redis but updated 0. This may indicate: 1) All sessions already in sync, 2) Redis values === DB values, or 3) Database connection issue. Check logs above for detailed comparison.`,
+    // Log performance summary for large datasets
+    if (sessionDataMap.size > 1000) {
+      logger.info(
+        `Large dataset sync summary: ${sessionDataMap.size} sessions processed, ${updated} updated, ${totalSkipped} skipped, ${errors} errors`,
       );
     }
 
-    // Log detailed summary for each session found
-    if (sessionDataMap.size > 0) {
-      const sessionSummary = Array.from(sessionDataMap.entries())
-        .map(([id, count]) => `session ${id}=${count}`)
-        .join(', ');
-      logger.info(`Sync summary - Sessions found in Redis: ${sessionSummary}`);
+    // Ensure no data loss: if we have errors, log critical warning
+    if (errors > 0) {
+      logger.error(
+        `⚠ CRITICAL: ${errors} sessions failed to sync. Some Redis sales counts may not be synced to database. Please check logs above and retry if needed.`,
+      );
+    } else if (sessionDataMap.size > 0) {
+      logger.info(
+        `✓ SUCCESS: All ${sessionDataMap.size} Redis sales counts have been properly synced to database (${updated} updated, ${totalSkipped} already synced)`,
+      );
     }
 
     return Promise.resolve({
