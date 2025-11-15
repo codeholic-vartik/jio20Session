@@ -551,102 +551,7 @@ export const OrphanCouponService = {
             continue;
           }
 
-          // Check if sales threshold has been reached for this term_id
-          const thresholdCheck =
-            await OrphanCouponService.isSalesThresholdReachedForTermId(
-              coupon.term_id,
-            );
-
-          if (thresholdCheck.reached) {
-            logger.info(
-              `Sales threshold reached for term_id ${coupon.term_id} (totalSales=${thresholdCheck.totalSales} >= trigger=${thresholdCheck.triggerCount}). Retrying to find upcoming sessions...`,
-            );
-
-            // Retry finding upcoming sessions 2-3 times (with delays)
-            const upcomingSessions =
-              await OrphanCouponService.findUpcomingSessionsByTermId(
-                coupon.term_id,
-                3, // maxRetries = 3
-                2000, // retryDelayMs = 2 seconds
-              );
-
-            if (upcomingSessions.length === 0) {
-              // No upcoming sessions found after retries, process refund
-              if (coupon.order_id) {
-                const refundResult = await OrphanCouponService.processRefund(
-                  coupon.order_id,
-                  coupon.id,
-                );
-
-                if (refundResult.success) {
-                  stats.refunded++;
-                  logger.info(
-                    `Sales threshold reached and no upcoming sessions found after retries for coupon ${coupon.id}, processed refund for order ${coupon.order_id}`,
-                  );
-                } else {
-                  stats.errors++;
-                  logger.error(
-                    `Failed to process refund for coupon ${coupon.id}: ${refundResult.message}`,
-                  );
-                }
-              } else {
-                logger.warn(
-                  `Sales threshold reached for coupon ${coupon.id} but no order_id, cannot process refund`,
-                );
-                stats.errors++;
-              }
-              continue;
-            }
-
-            // Found upcoming session after retry, proceed with assignment
-            const session = upcomingSessions[0];
-            const result = await OrphanCouponService.assignCouponToSession(
-              coupon.id,
-              session.id,
-              session.session_profile_id,
-            );
-
-            if (result.success) {
-              stats.assigned++;
-              logger.info(
-                `Successfully assigned coupon ${coupon.id} to session ${session.id} after threshold check and retry`,
-              );
-            } else if (result.shouldRefund) {
-              // Session-level trigger reached, process refund
-              if (coupon.order_id) {
-                const refundResult = await OrphanCouponService.processRefund(
-                  coupon.order_id,
-                  coupon.id,
-                );
-
-                if (refundResult.success) {
-                  stats.refunded++;
-                  logger.info(
-                    `Session-level sales trigger reached for coupon ${coupon.id}, processed refund for order ${coupon.order_id}`,
-                  );
-                } else {
-                  stats.errors++;
-                  logger.error(
-                    `Failed to process refund for coupon ${coupon.id}: ${refundResult.message}`,
-                  );
-                }
-              } else {
-                logger.warn(
-                  `Session-level sales trigger reached for coupon ${coupon.id} but no order_id, cannot process refund`,
-                );
-                stats.errors++;
-              }
-            } else {
-              stats.errors++;
-              logger.error(
-                `Failed to assign coupon ${coupon.id}: ${result.message}`,
-              );
-            }
-            continue;
-          }
-
-          // Sales threshold not reached, proceed with normal flow
-          // Find upcoming sessions for this term_id (single attempt)
+          // Find upcoming sessions for this term_id
           const upcomingSessions =
             await OrphanCouponService.findUpcomingSessionsByTermId(
               coupon.term_id,
@@ -654,21 +559,43 @@ export const OrphanCouponService = {
             );
 
           if (upcomingSessions.length > 0) {
-            // Assign to first upcoming session
+            // Found upcoming session - check its sales count before assigning
             const session = upcomingSessions[0];
-            const result = await OrphanCouponService.assignCouponToSession(
-              coupon.id,
-              session.id,
-              session.session_profile_id,
-            );
 
-            if (result.success) {
-              stats.assigned++;
-              logger.info(
-                `Successfully assigned coupon ${coupon.id} to session ${session.id}`,
+            // Check if this upcoming session's sales count has reached the trigger
+            const redis = getRedisConnection();
+            const salesRedisKey = `session:sales:${session.id}`;
+            const currentCountStr = await redis.get(salesRedisKey);
+            const currentSalesCount = currentCountStr
+              ? parseInt(currentCountStr, 10)
+              : 0;
+
+            // Get session profile to get sales_trigger_count
+            const sessionProfile = await db.session_profiles.findUnique({
+              where: { id: session.session_profile_id },
+              select: { sales_trigger_count: true },
+            });
+
+            if (!sessionProfile) {
+              logger.error(
+                `Session profile ${session.session_profile_id} not found for session ${session.id}`,
               );
-            } else if (result.shouldRefund) {
-              // Sales trigger reached, process refund instead
+              stats.errors++;
+              continue;
+            }
+
+            const salesTriggerCount = sessionProfile.sales_trigger_count;
+
+            // Check if sales count has reached the trigger value
+            if (
+              salesTriggerCount !== null &&
+              currentSalesCount >= salesTriggerCount
+            ) {
+              // Sales count reached - refund instead of assigning
+              logger.info(
+                `Upcoming session ${session.id} sales count reached: current=${currentSalesCount} >= trigger=${salesTriggerCount}. Processing refund for coupon ${coupon.id}`,
+              );
+
               if (coupon.order_id) {
                 const refundResult = await OrphanCouponService.processRefund(
                   coupon.order_id,
@@ -678,7 +605,7 @@ export const OrphanCouponService = {
                 if (refundResult.success) {
                   stats.refunded++;
                   logger.info(
-                    `Sales trigger reached for coupon ${coupon.id}, processed refund for order ${coupon.order_id}`,
+                    `Sales trigger reached for session ${session.id}, processed refund for coupon ${coupon.id}, order ${coupon.order_id}`,
                   );
                 } else {
                   stats.errors++;
@@ -688,15 +615,29 @@ export const OrphanCouponService = {
                 }
               } else {
                 logger.warn(
-                  `Sales trigger reached for coupon ${coupon.id} but no order_id, cannot process refund`,
+                  `Sales trigger reached for session ${session.id} but coupon ${coupon.id} has no order_id, cannot process refund`,
                 );
                 stats.errors++;
               }
             } else {
-              stats.errors++;
-              logger.error(
-                `Failed to assign coupon ${coupon.id}: ${result.message}`,
+              // Sales count not reached - assign coupon to session
+              const result = await OrphanCouponService.assignCouponToSession(
+                coupon.id,
+                session.id,
+                session.session_profile_id,
               );
+
+              if (result.success) {
+                stats.assigned++;
+                logger.info(
+                  `Successfully assigned coupon ${coupon.id} to session ${session.id} (sales count: ${currentSalesCount} < trigger: ${salesTriggerCount})`,
+                );
+              } else {
+                stats.errors++;
+                logger.error(
+                  `Failed to assign coupon ${coupon.id} to session ${session.id}: ${result.message}`,
+                );
+              }
             }
           } else {
             // No upcoming sessions, process refund
