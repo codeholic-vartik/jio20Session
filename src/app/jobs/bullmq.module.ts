@@ -6,7 +6,7 @@ import {
   OnModuleInit,
   Logger,
 } from '@nestjs/common';
-import { Queue } from 'bullmq';
+import { Queue, RepeatableJob, RepeatOptions } from 'bullmq';
 import IORedis, { RedisOptions } from 'ioredis';
 import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
@@ -161,9 +161,44 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
     @Inject('SESSION_QUEUE') private readonly sessionQueue: Queue,
   ) {}
 
+  /**
+   * Helper to get repeatable jobs using non-deprecated API
+   * Explicitly uses the signature without parameters to avoid deprecation warning
+   */
+  private async getRepeatableJobs(): Promise<RepeatableJob[]> {
+    return this.sessionQueue.getRepeatableJobs();
+  }
+
+  /**
+   * Helper to remove repeatable job using non-deprecated API
+   * Uses removeRepeatable with options object instead of separate parameters
+   */
+  private async removeRepeatableJob(existing: RepeatableJob): Promise<void> {
+    // Use removeRepeatable with options object - non-deprecated API in BullMQ v5
+    // The new API uses an options object instead of separate parameters
+    const repeatOptions: RepeatOptions = existing.pattern
+      ? { pattern: existing.pattern }
+      : existing.every
+        ? {
+            every:
+              typeof existing.every === 'number'
+                ? existing.every
+                : parseInt(String(existing.every), 10),
+          }
+        : {};
+    // Type assertion to use non-deprecated signature (without optional jobId parameter)
+    await (
+      this.sessionQueue.removeRepeatable as (
+        name: string,
+        repeatOptions: RepeatOptions,
+      ) => Promise<boolean>
+    )(existing.name, repeatOptions);
+  }
+
   async onModuleInit(): Promise<void> {
     await this.ensureOpeningSessionSyncJob();
     await this.scheduleSalesSyncJob();
+    await this.scheduleOrphanCouponProcessingJob();
   }
 
   private async ensureOpeningSessionSyncJob(): Promise<void> {
@@ -174,10 +209,10 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
     const repeatEveryMs = Math.max(intervalSeconds, 5) * 1000;
 
     try {
-      const jobs = await this.sessionQueue.getRepeatableJobs();
+      const jobs = await this.getRepeatableJobs();
       const existing = jobs.find((j) => j.name === 'sync-opening-sessions');
       if (existing) {
-        await this.sessionQueue.removeRepeatableByKey(existing.key);
+        await this.removeRepeatableJob(existing);
         this.logger.log('Removed existing sync-opening-sessions job');
       }
 
@@ -210,10 +245,10 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
     const intervalMs = Math.max(syncIntervalMinutes, 1) * 60 * 1000;
 
     try {
-      const jobs = await this.sessionQueue.getRepeatableJobs();
+      const jobs = await this.getRepeatableJobs();
       const existing = jobs.find((j) => j.name === 'sync-sales');
       if (existing) {
-        await this.sessionQueue.removeRepeatableByKey(existing.key);
+        await this.removeRepeatableJob(existing);
         this.logger.log('Removed existing sync-sales recurring job');
       }
 
@@ -233,6 +268,55 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed to schedule sales sync job: ${errMsg}`);
+    }
+  }
+
+  private async scheduleOrphanCouponProcessingJob(): Promise<void> {
+    const processingIntervalMinutes = parseInt(
+      process.env.ORPHAN_COUPON_PROCESSING_INTERVAL_MINUTES || '5',
+      10,
+    );
+    const intervalMs = Math.max(processingIntervalMinutes, 1) * 60 * 1000;
+
+    try {
+      const jobs = await this.getRepeatableJobs();
+      const existing = jobs.find((j) => j.name === 'process-orphan-coupons');
+      if (existing) {
+        await this.removeRepeatableJob(existing);
+        this.logger.log(
+          'Removed existing process-orphan-coupons recurring job',
+        );
+      }
+
+      // Schedule recurring job
+      await this.sessionQueue.add(
+        'process-orphan-coupons',
+        {},
+        {
+          repeat: { every: intervalMs },
+          removeOnComplete: { age: 3600, count: 10 },
+          removeOnFail: { age: 86400 },
+        },
+      );
+
+      // Also trigger immediately on startup (one-time job)
+      await this.sessionQueue.add(
+        'process-orphan-coupons',
+        {},
+        {
+          removeOnComplete: { age: 3600, count: 10 },
+          removeOnFail: { age: 86400 },
+        },
+      );
+
+      this.logger.log(
+        `Scheduled orphan coupon processing job every ${processingIntervalMinutes} min(s) (also triggered immediately)`,
+      );
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to schedule orphan coupon processing job: ${errMsg}`,
+      );
     }
   }
 
