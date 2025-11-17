@@ -65,6 +65,8 @@ const envSchema = z.object({
           'SESSION_SYNC_SALES_BATCH_SIZE must be a positive integer less than or equal to 1000',
       },
     ),
+  RAZORPAY_CLIENT: z.string().optional(),
+  RAZORPAY_SECRET: z.string().optional(),
 });
 
 function validateEnv(config: Record<string, unknown>) {

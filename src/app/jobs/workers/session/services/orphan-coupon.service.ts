@@ -1,11 +1,13 @@
 import { PrismaClient } from '@prisma/client';
 import IORedis from 'ioredis';
+import Razorpay from 'razorpay';
 import {
   createStandaloneLogger,
   StandaloneLogger,
 } from '../../../../../common/logger/logger.util';
 import { SessionStatus } from '../../../../../common/types/enums/session-status.enum';
 import { createSalesSyncRedisConnection } from '../config/redis.config';
+import { getRazorpayConfig } from '../config/razorpay.config';
 
 const logger: StandaloneLogger = createStandaloneLogger('OrphanCouponService');
 const db = new PrismaClient();
@@ -389,7 +391,7 @@ export const OrphanCouponService = {
 
   /**
    * Processes refund for a coupon when no upcoming sessions are available
-   * Calls Razorpay refund webhook/API
+   * Uses Razorpay SDK to create a refund directly via API
    */
   processRefund: async (
     orderId: string,
@@ -431,66 +433,109 @@ export const OrphanCouponService = {
         };
       }
 
-      // Call Razorpay refund webhook/API
-      // TODO: Replace with actual Razorpay refund API call
-      // This is a placeholder that should be implemented based on your Razorpay integration
-      const refundWebhookUrl =
-        process.env.RAZORPAY_REFUND_WEBHOOK_URL ||
-        process.env.REFUND_WEBHOOK_URL;
+      // Get Razorpay credentials from config
+      const razorpayConfig = getRazorpayConfig();
 
-      if (refundWebhookUrl) {
-        try {
-          const response = await fetch(refundWebhookUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              payment_id: transaction.payment_id,
-              order_id: orderId,
-              coupon_id: couponId,
-              amount: transaction.amount.toString(),
-              currency: transaction.currency || 'INR',
-              reason: 'No upcoming session available',
-            }),
-          });
-
-          if (!response.ok) {
-            throw new Error(
-              `Refund webhook returned status ${response.status}`,
-            );
-          }
-
-          logger.info(
-            `Refund webhook called successfully for order ${orderId}, coupon ${couponId}`,
-          );
-
-          return {
-            success: true,
-            message: `Refund processed for order ${orderId}`,
-          };
-        } catch (webhookError) {
-          const errorMessage =
-            webhookError instanceof Error
-              ? webhookError.message
-              : String(webhookError);
-          logger.error(
-            `Failed to call refund webhook for order ${orderId}: ${errorMessage}`,
-          );
-          return {
-            success: false,
-            message: `Refund webhook failed: ${errorMessage}`,
-          };
-        }
-      } else {
-        // If no webhook URL is configured, log and return success
-        // In production, you might want to throw an error instead
-        logger.warn(
-          `Refund webhook URL not configured. Skipping refund for order ${orderId}, coupon ${couponId}. Please configure RAZORPAY_REFUND_WEBHOOK_URL or REFUND_WEBHOOK_URL environment variable.`,
+      // Validate Razorpay credentials
+      if (!razorpayConfig.client || !razorpayConfig.secret) {
+        logger.error(
+          `Razorpay credentials not configured. Cannot process refund for order ${orderId}, coupon ${couponId}. Please configure RAZORPAY_CLIENT and RAZORPAY_SECRET environment variables.`,
         );
         return {
+          success: false,
+          message: 'Razorpay credentials not configured',
+        };
+      }
+
+      try {
+        // Initialize Razorpay client
+        const razorpay = new Razorpay({
+          key_id: razorpayConfig.client,
+          key_secret: razorpayConfig.secret,
+        });
+
+        // Convert amount to paise (Razorpay uses smallest currency unit)
+        // transaction.amount is Decimal, convert to number and multiply by 100
+        const amountInPaise = Math.round(Number(transaction.amount) * 100);
+
+        // Create refund using Razorpay SDK
+        // Razorpay automatically processes refund to user's original payment method
+        const refundData: {
+          amount: number;
+          notes?: Record<string, string>;
+        } = {
+          amount: amountInPaise, // Amount in paise
+          notes: {
+            reason: 'No upcoming session available',
+            order_id: orderId,
+            coupon_id: couponId.toString(),
+          },
+        };
+
+        logger.info(
+          `Processing Razorpay refund for payment ${transaction.payment_id}, order ${orderId}, amount: ${amountInPaise} paise (₹${(amountInPaise / 100).toFixed(2)})`,
+        );
+
+        // Create refund using payments.refund() method
+        const refund = await razorpay.payments.refund(
+          transaction.payment_id,
+          refundData,
+        );
+
+        // Log refund details - Razorpay automatically processes refund to user's original payment method
+        logger.info(
+          `Razorpay refund created successfully for order ${orderId}, coupon ${couponId}. Refund ID: ${refund.id}, Status: ${refund.status}, Amount: ${refund.amount} paise (₹${(refund.amount / 100).toFixed(2)}). Refund will be processed to user's original payment method.`,
+        );
+
+        // Additional info about refund processing
+        if (refund.status === 'processed') {
+          logger.info(
+            `Refund ${refund.id} has been processed and funds have been returned to the user.`,
+          );
+        } else if (refund.status === 'pending') {
+          logger.info(
+            `Refund ${refund.id} is pending. Razorpay will process it to the user's account within 5-7 business days.`,
+          );
+        }
+
+        return {
           success: true,
-          message: `Refund webhook not configured, logged for manual processing`,
+          message: `Refund processed successfully. Refund ID: ${refund.id}, Status: ${refund.status}. Amount ₹${(refund.amount / 100).toFixed(2)} will be refunded to user's payment method.`,
+        };
+      } catch (razorpayError: unknown) {
+        let errorMessage: string;
+        let detailedError: string;
+
+        // Check if it's a Razorpay API error with more details
+        if (
+          razorpayError &&
+          typeof razorpayError === 'object' &&
+          'error' in razorpayError
+        ) {
+          const apiError = razorpayError as { error: { description?: string } };
+          if (apiError.error?.description) {
+            detailedError = apiError.error.description;
+            errorMessage = detailedError;
+          } else {
+            errorMessage = JSON.stringify(razorpayError);
+            detailedError = errorMessage;
+          }
+        } else if (razorpayError instanceof Error) {
+          errorMessage = razorpayError.message;
+          detailedError = errorMessage;
+        } else {
+          errorMessage = JSON.stringify(razorpayError);
+          detailedError = errorMessage;
+        }
+
+        logger.error(
+          `Failed to process Razorpay refund for order ${orderId}, coupon ${couponId}: ${detailedError}`,
+          razorpayError instanceof Error ? razorpayError.stack : undefined,
+        );
+
+        return {
+          success: false,
+          message: `Razorpay refund failed: ${detailedError}`,
         };
       }
     } catch (error) {
