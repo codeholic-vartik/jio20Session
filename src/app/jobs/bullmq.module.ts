@@ -196,6 +196,8 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit(): Promise<void> {
+    // Schedule jobs sequentially to prevent all jobs from running at exactly the same time
+    // This reduces database connection pool exhaustion and lock contention
     await this.ensureOpeningSessionSyncJob();
     await this.scheduleSalesSyncJob();
     await this.scheduleOrphanCouponProcessingJob();
@@ -252,18 +254,23 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
         this.logger.log('Removed existing sync-sales recurring job');
       }
 
+      // Offset the first execution by 15 seconds to avoid collision with other jobs
+      // This ensures sync-sales doesn't run at exactly the same time as orphan-coupon-processing
+      const offsetMs = 15000; // 15 second offset
+
       await this.sessionQueue.add(
         'sync-sales',
         {},
         {
           repeat: { every: intervalMs },
+          delay: offsetMs, // First execution delayed by 15 seconds
           removeOnComplete: { age: 3600, count: 10 },
           removeOnFail: { age: 86400 },
         },
       );
 
       this.logger.log(
-        `Scheduled sales sync job every ${syncIntervalMinutes} min(s)`,
+        `Scheduled sales sync job every ${syncIntervalMinutes} min(s) (with 15s offset to prevent collision)`,
       );
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
@@ -288,18 +295,24 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
         );
       }
 
-      // Schedule recurring job
+      // Offset the first execution by 30 seconds to avoid collision with sync-sales (which has 15s offset)
+      // This ensures orphan-coupon runs 30 seconds after startup, sync-sales runs 15 seconds after
+      const offsetMs = 30000; // 30 second offset
+
+      // Schedule recurring job with offset
       await this.sessionQueue.add(
         'process-orphan-coupons',
         {},
         {
           repeat: { every: intervalMs },
+          delay: offsetMs, // First execution delayed by 30 seconds
           removeOnComplete: { age: 3600, count: 10 },
           removeOnFail: { age: 86400 },
         },
       );
 
-      // Also trigger immediately on startup (one-time job)
+      // Also trigger immediately on startup (one-time job, no delay)
+      // This immediate trigger is useful for processing any orphans that appeared during downtime
       await this.sessionQueue.add(
         'process-orphan-coupons',
         {},
@@ -310,7 +323,7 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
       );
 
       this.logger.log(
-        `Scheduled orphan coupon processing job every ${processingIntervalMinutes} min(s) (also triggered immediately)`,
+        `Scheduled orphan coupon processing job every ${processingIntervalMinutes} min(s) (recurring job offset by 30s, also triggered immediately once)`,
       );
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
