@@ -3,7 +3,7 @@ name: Deploy Notification Services App
 on:
   push:
     branches:
-      - production
+      - develop
 
 jobs:
   deploy:
