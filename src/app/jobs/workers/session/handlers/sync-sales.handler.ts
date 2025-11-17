@@ -375,6 +375,11 @@ export async function handleSyncSales(
       try {
         // Use batch transaction for better performance
         // Update all sessions in the batch within a single transaction
+        const transactionStartTime = Date.now();
+        logger.debug(
+          `Starting transaction for batch ${Math.floor(i / BATCH_SIZE) + 1} with ${batch.length} sessions`,
+        );
+
         const batchUpdated = await prisma.$transaction(
           async (tx) => {
             let batchUpdatedCount = 0;
@@ -429,10 +434,21 @@ export async function handleSyncSales(
             return batchUpdatedCount;
           },
           {
-            maxWait: 10000,
-            timeout: 30000,
+            maxWait: 10000, // 10 seconds max wait for transaction to start
+            timeout: 60000, // Increased from 30s to 60s to prevent premature timeouts under load
           },
         );
+
+        const transactionDuration = Date.now() - transactionStartTime;
+        if (transactionDuration > 5000) {
+          logger.warn(
+            `Transaction for batch ${Math.floor(i / BATCH_SIZE) + 1} took ${transactionDuration}ms (longer than 5s)`,
+          );
+        } else {
+          logger.debug(
+            `Transaction for batch ${Math.floor(i / BATCH_SIZE) + 1} completed in ${transactionDuration}ms`,
+          );
+        }
 
         const rowsUpdated = batchUpdated;
 
@@ -495,9 +511,35 @@ export async function handleSyncSales(
         }
       } catch (batchError) {
         // Batch transaction failed - fallback to individual updates to ensure no data loss
-        logger.warn(
-          `Batch transaction failed for batch ${Math.floor(i / BATCH_SIZE) + 1}, falling back to individual updates to ensure no data loss: ${batchError instanceof Error ? batchError.message : String(batchError)}`,
-        );
+        const errorMessage =
+          batchError instanceof Error ? batchError.message : String(batchError);
+        const errorStack =
+          batchError instanceof Error ? batchError.stack : undefined;
+
+        // Check if this is a timeout error
+        if (
+          errorMessage.includes('timeout') ||
+          errorMessage.includes('timed out') ||
+          errorMessage.includes('Transaction API error')
+        ) {
+          logger.error(
+            `⚠️ TRANSACTION TIMEOUT: Batch ${Math.floor(i / BATCH_SIZE) + 1} timed out after 60s. This indicates database is overloaded or lock contention. Error: ${errorMessage}`,
+            errorStack,
+          );
+        } else if (
+          errorMessage.includes('deadlock') ||
+          errorMessage.includes('lock')
+        ) {
+          logger.error(
+            `⚠️ DATABASE LOCK/DEADLOCK: Batch ${Math.floor(i / BATCH_SIZE) + 1} encountered lock contention. Error: ${errorMessage}`,
+            errorStack,
+          );
+        } else {
+          logger.warn(
+            `Batch transaction failed for batch ${Math.floor(i / BATCH_SIZE) + 1}, falling back to individual updates to ensure no data loss: ${errorMessage}`,
+            errorStack,
+          );
+        }
 
         // Retry each item individually to ensure all Redis values are synced
         for (const item of batch) {
@@ -659,6 +701,11 @@ export async function handleSyncSales(
       );
     }
 
+    // Final completion log to verify handler finished
+    logger.info(
+      `🏁 Sync-sales handler completed successfully - returning result: { synced: true, total: ${sessionDataMap.size}, updated: ${updated}, errors: ${errors} }`,
+    );
+
     return Promise.resolve({
       synced: true,
       total: sessionDataMap.size,
@@ -669,7 +716,7 @@ export async function handleSyncSales(
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error';
     logger.error(
-      `Sales count sync failed: ${errorMessage}`,
+      `❌ Sales count sync FAILED with exception: ${errorMessage}`,
       error instanceof Error ? error.stack : undefined,
     );
     throw error;

@@ -122,11 +122,16 @@ export const sessionWorker = new Worker(
     connection,
     // Enable processing of delayed jobs - these settings help ensure delayed jobs are processed
     limiter: {
-      max: 10, // Process up to 10 jobs concurrently
+      max: 2, // Process up to 2 jobs concurrently (reduced to prevent database connection exhaustion)
       duration: 1000, // Per second
     },
     // Worker settings for processing jobs
-    concurrency: 5, // Process up to 5 jobs concurrently
+    // IMPORTANT: Reduced concurrency from 5 to 1 to prevent:
+    // 1. Database connection pool exhaustion when multiple jobs run simultaneously
+    // 2. Database deadlocks when sync-sales and sync-opening-sessions both update sessions table
+    // 3. Prisma transaction timeouts due to lock contention
+    // This ensures jobs run sequentially, preventing resource contention
+    concurrency: 1, // Process 1 job at a time to avoid database lock contention
     removeOnComplete: {
       age: 3600, // Keep completed jobs for 1 hour
       count: 100, // Keep last 100 completed jobs
