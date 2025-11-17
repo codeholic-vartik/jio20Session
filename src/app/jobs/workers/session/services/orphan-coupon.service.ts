@@ -39,7 +39,7 @@ export const OrphanCouponService = {
 
     while (true) {
       const batch = await db.session_coupons.findMany({
-        where: { session_id: null },
+        where: { session_id: null, is_valid: true },
         select: {
           id: true,
           term_id: true,

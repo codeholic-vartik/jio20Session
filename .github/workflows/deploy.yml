@@ -1,77 +1,33 @@
-name: Lint and Deploy
+name: Deploy Notification Services App
 
 on:
   push:
     branches:
-      - develop
-  workflow_dispatch:
+      - production
 
 jobs:
   deploy:
-    environment: jio20 session
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Use Node.js 20
-        uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
         with:
-          node-version: 20
-          cache: npm
+          node-version: 18
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run lint
-        run: npm run lint
-
-      - name: Build project
-        run: npm run build
-
-      - name: Deploy to server
-        if: success()
-        uses: appleboy/ssh-action@v1.0.0
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v0.1.7
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
-
-            APP_BRANCH="${{ github.ref_name }}"
-            APP_DIR="${{ secrets.APP_DIR }}"
-            PM2_APP_NAME="${{ secrets.PM2_APP_NAME }}"
-            REPO_URL="${{ secrets.REPO_URL }}"
-
-            if [ ! -d "$APP_DIR/.git" ]; then
-              if [ -z "$REPO_URL" ]; then
-                echo "REPO_URL secret is required to bootstrap repository." >&2
-                exit 1
-              fi
-              mkdir -p "$APP_DIR"
-              if [ -z "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
-                git clone "$REPO_URL" "$APP_DIR"
-              else
-                echo "$APP_DIR exists but is not a Git repository." >&2
-                exit 1
-              fi
-            fi
-
-            cd "$APP_DIR"
-
-            git fetch --prune origin
-            git checkout -B "$APP_BRANCH" "origin/$APP_BRANCH"
-
-            NODE_ENV=production npm ci --omit=dev
+            cd /var/www/html/codeholic_product/jio20session
+            git pull origin develop
+            npm install
             npm run build
-
-            if pm2 describe "$PM2_APP_NAME" >/dev/null 2>&1; then
-              pm2 restart "$PM2_APP_NAME" --update-env
-            else
-              pm2 start npm --name "$PM2_APP_NAME" -- run start
-            fi
-
-            pm2 save
+            pm2 restart jio20-session || pm2 start dist/src/main.js --name jio20-session

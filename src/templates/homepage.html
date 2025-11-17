@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jio20 Session Platform</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;700&display=swap">
+    <style>
+      :root {
+        font-family: 'IBM Plex Sans', 'Inter', sans-serif;
+        color: #201c18;
+        background: #ffffff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #ffffff;
+        color: #1c1c1c;
+        padding: clamp(2rem, 4vw, 4rem);
+      }
+      main {
+        max-width: 880px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: clamp(2.8rem, 8vw, 4.5rem);
+        margin-bottom: 0.5rem;
+      }
+      h2 {
+        font-size: clamp(1.6rem, 4vw, 2.4rem);
+        margin-bottom: 0.5rem;
+      }
+      p {
+        font-size: 1rem;
+        line-height: 1.8;
+        margin: 0 0 1.5rem;
+      }
+      .leading-line {
+        font-size: 1.1rem;
+        color: #555;
+        margin-bottom: 2.5rem;
+      }
+      .divider {
+        border: none;
+        border-top: 2px dashed #222;
+        margin: 2rem 0;
+      }
+      .section-title {
+        font-size: 1.4rem;
+        font-weight: 600;
+        margin-top: 2.5rem;
+        margin-bottom: 0.5rem;
+      }
+      ul {
+        padding-left: 1.2rem;
+        margin: 0 0 1.5rem;
+      }
+      li {
+        margin-bottom: 0.6rem;
+      }
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-top: 2rem;
+      }
+      button {
+        border: 2px solid #201c18;
+        background: #fff;
+        color: inherit;
+        font-family: inherit;
+        padding: 0.75rem 1.5rem;
+        font-size: 0.95rem;
+        cursor: pointer;
+        transition: background 120ms ease;
+      }
+      button.primary {
+        background: #201c18;
+        color: #fff;
+      }
+      button:hover {
+        background: #201c18;
+        color: #fff;
+      }
+      footer {
+        margin-top: 3rem;
+        font-size: 0.9rem;
+        color: #777;
+      }
+      .docs-link {
+        display: inline-block;
+        margin-top: 2rem;
+        font-size: 1rem;
+      }
+      .docs-link button {
+        transition: background 0.18s cubic-bezier(.4,0,.2,1), color 0.15s;
+      }
+      .docs-link button:hover,
+      .docs-link button:focus {
+        background: #e9e4da;
+        color: #201c18;
+        border-color: #191714;
+        outline: none;
+      }
+      .docs-link a {
+        color: #201c18;
+        text-decoration: underline;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Jio20 Session Platform</h1>
+      <p class="leading-line">A platform for creating and managing live sessions.</p>
+
+      <hr class="divider" />
+
+      <section>
+        <div class="section-title">The Idea</div>
+        <p>
+          This is not just a platform. It is a foundational toolkit and well-crafted suite of
+          components for developers. We take care of databases, authentication, and the
+          orchestration logic—so you can focus on the business logic.
+        </p>
+      </section>
+
+      <section>
+        <div class="section-title">What you ship faster</div>
+        <ul>
+          <li>Sessions that rotate, sync, and report in real time.</li>
+          <li>Safe coupon handling, sales thresholds, and automated refunds.</li>
+          <li>Metrics and alerts routed to the people who need them, instantly.</li>
+        </ul>
+      </section>
+
+      <section>
+        <div class="section-title">How it feels</div>
+        <p>
+          Clean primitives, clear guardrails, and batteries included. Describe what the
+          show looks like; the platform handles the plumbing, race conditions, and
+          Razorpay handshakes.
+        </p>
+      </section>
+<!-- 
+      <div class="docs-link">
+        Read the documentation →
+        <button>
+            <a href="/docs">Documentation</a>
+        </button>
+      </div> -->
+
+      <footer>
+        Developed by <strong>Vartik Anand</strong> · Hand crafted by
+        <strong>Codeholic</strong>
+      </footer>
+    </main>
+  </body>
+</html>
+
