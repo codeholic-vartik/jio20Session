@@ -21,6 +21,7 @@ import { handleThresholdReached } from './handlers/threshold-reached.handler';
 import { handleSyncSales } from './handlers/sync-sales.handler';
 import { handleStartLive } from './handlers/start-live.handler';
 import { handleSyncOpeningSessions } from './handlers/sync-opening.handler';
+import { handleOrphanCoupons } from './handlers/orphan-coupon-checker';
 import {
   createStandaloneLogger,
   StandaloneLogger,
@@ -67,6 +68,8 @@ logger.info('Session worker module loaded - initializing worker...');
  * - 'threshold-reached': Routes to handleThresholdReached
  * - 'sync-sales': Routes to handleSyncSales
  * - 'start-live': Routes to handleStartLive (transitions OPENING to LIVE at exact time)
+ * - 'sync-opening-sessions': Routes to handleSyncOpeningSessions
+ * - 'process-orphan-coupons': Routes to handleOrphanCoupons
  * - Unknown types: Returns { ok: true }
  */
 // Initialize worker immediately
@@ -94,6 +97,8 @@ export const sessionWorker = new Worker(
         result = await handleStartLive(job);
       } else if (job.name === 'sync-opening-sessions') {
         result = await handleSyncOpeningSessions(job);
+      } else if (job.name === 'process-orphan-coupons') {
+        result = await handleOrphanCoupons(job);
       } else {
         // Default response for unknown job types
         result = { ok: true };
