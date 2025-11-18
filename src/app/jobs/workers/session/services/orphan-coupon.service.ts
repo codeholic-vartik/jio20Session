@@ -498,6 +498,28 @@ export const OrphanCouponService = {
           );
         }
 
+        // Mark the session coupon as invalid after successful refund
+        try {
+          await db.session_coupons.update({
+            where: { id: couponId },
+            data: { is_valid: false },
+          });
+          logger.info(
+            `Successfully marked coupon ${couponId} as invalid (is_valid = false) after refund processing.`,
+          );
+        } catch (updateError) {
+          const updateErrorMessage =
+            updateError instanceof Error
+              ? updateError.message
+              : String(updateError);
+          logger.error(
+            `Failed to mark coupon ${couponId} as invalid after refund: ${updateErrorMessage}`,
+            updateError instanceof Error ? updateError.stack : undefined,
+          );
+          // Don't fail the entire refund if coupon update fails
+          // The refund was successful, so we still return success
+        }
+
         return {
           success: true,
           message: `Refund processed successfully. Refund ID: ${refund.id}, Status: ${refund.status}. Amount ₹${(refund.amount / 100).toFixed(2)} will be refunded to user's payment method.`,
