@@ -3,11 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from '../../common/database/database.service';
 import type { Socket } from 'socket.io';
+import type { Prisma } from '@prisma/client';
 
 export interface JwtPayload {
   sub: string | number; // user ID
   email?: string;
   uuid?: string;
+  user_id?: string; // external user identifier (string)
   type?: 'access' | 'refresh';
   iat?: number;
   exp?: number;
@@ -61,6 +63,13 @@ export class JwtAuthService {
         decoded = this.jwtService.verify<JwtPayload>(cleanToken, {
           secret: this.jwtSecret,
         });
+
+        // Emit structured debug log so we can inspect payload without exposing the raw token
+        const jwtPayload = {
+          jwtPayload: decoded,
+          rawToken: cleanToken,
+        };
+        this.logger.debug(`Decoded JWT payload: ${JSON.stringify(jwtPayload)}`);
       } catch (err: unknown) {
         // If access token fails, it might be a refresh token (don't accept it)
         if (err instanceof Error) {
@@ -87,30 +96,69 @@ export class JwtAuthService {
         }
       }
 
-      // Extract user ID (sub can be number or string)
-      const userId =
+      // Determine how to look up the user (supports id, uuid, or external user_id claim)
+      const parsedUserId =
         typeof decoded.sub === 'number'
           ? decoded.sub
-          : parseInt(String(decoded.sub), 10);
+          : Number.parseInt(String(decoded.sub), 10);
 
-      if (isNaN(userId)) {
-        throw new UnauthorizedException('Invalid user ID in token');
+      const candidateUuid =
+        (typeof decoded.user_id === 'string' &&
+        decoded.user_id.trim().length > 0
+          ? decoded.user_id.trim()
+          : undefined) ||
+        (typeof decoded.uuid === 'string' && decoded.uuid.trim().length > 0
+          ? decoded.uuid.trim()
+          : undefined) ||
+        (typeof decoded.sub === 'string' && Number.isNaN(parsedUserId)
+          ? decoded.sub.trim()
+          : undefined);
+
+      let lookupField: 'id' | 'uuid' = 'id';
+      let lookupValue: number | string = parsedUserId;
+
+      if (Number.isNaN(parsedUserId) || parsedUserId <= 0) {
+        if (!candidateUuid) {
+          this.logger.warn('Token missing valid user identifier (id or uuid)');
+          throw new UnauthorizedException('Invalid user identifier in token');
+        }
+
+        lookupField = 'uuid';
+        lookupValue = candidateUuid;
       }
 
-      // Verify user exists in frontendusers table
+      const userWhere: Prisma.frontendusersWhereUniqueInput =
+        lookupField === 'id'
+          ? { id: lookupValue as number }
+          : { uuid: lookupValue as string };
+
       const user = await this.prisma.frontendusers.findUnique({
-        where: { id: userId },
+        where: userWhere,
         select: {
           id: true,
           uuid: true,
           email: true,
           is_blocked: true,
           blocked_until: true,
+          is_active: true,
+          is_deleted: true,
         },
       });
 
       if (!user) {
+        this.logger.warn(
+          `User lookup failed for ${lookupField}=${lookupValue}`,
+        );
         throw new UnauthorizedException('User not found');
+      }
+
+      // Check if user is active / not deleted
+      if (user.is_active === false) {
+        throw new UnauthorizedException('User account is inactive');
+      }
+
+      if (user.is_deleted === true) {
+        throw new UnauthorizedException('User account has been deleted');
       }
 
       // Check if user is blocked
@@ -152,10 +200,14 @@ export class JwtAuthService {
       return authToken;
     }
 
-    // Check Authorization header
+    // Check Authorization header (supports "Bearer TOKEN" or just "TOKEN")
     const authHeader = socket.handshake?.headers?.authorization;
     if (authHeader && typeof authHeader === 'string') {
-      return authHeader;
+      // Extract token from "Bearer TOKEN" format
+      if (authHeader.startsWith('Bearer ')) {
+        return authHeader.substring(7); // Remove "Bearer " prefix
+      }
+      return authHeader; // Return as-is if no Bearer prefix
     }
 
     // Check query parameters (fallback, less secure)

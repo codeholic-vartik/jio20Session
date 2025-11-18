@@ -703,7 +703,7 @@ export async function handleSyncSales(
 
     // Final completion log to verify handler finished
     logger.info(
-      `🏁 Sync-sales handler completed successfully - returning result: { synced: true, total: ${sessionDataMap.size}, updated: ${updated}, errors: ${errors} }`,
+      `Sync-sales handler completed successfully - returning result: { synced: true, total: ${sessionDataMap.size}, updated: ${updated}, errors: ${errors} }`,
     );
 
     return Promise.resolve({

@@ -13,6 +13,7 @@ import { SocketGateway } from '../socket/socket.gateway';
 import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
 
+// TODO  HAVE TO KEPP IN ENV FILES
 const THRESHOLD_REACHED_CHANNEL = 'session:sales:threshold_reached';
 const SALES_UPDATE_CHANNEL = 'session:sales:update';
 const PARTICIPANT_UPDATE_PATTERN = 'session:participant:*';
