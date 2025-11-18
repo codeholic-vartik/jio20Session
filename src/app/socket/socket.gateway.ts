@@ -15,6 +15,7 @@ import {
   isAuthenticatedSocket,
 } from '../auth/types/socket.types';
 import type { AuthenticatedUser } from '../auth/jwt-auth.service';
+import { SocketPingController } from './controllers/ping.controller';
 import { DatabaseService } from '../../common/database/database.service';
 import { SessionCounterService } from './realtime/session-counter.service';
 import { JoinTaxonomySalesDto } from './dto/join-taxonomy-sales.dto';
@@ -36,6 +37,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly jwtAuthService: JwtAuthService,
     private readonly database: DatabaseService,
     private readonly sessionCounter: SessionCounterService,
+    private readonly pingController: SocketPingController,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket) {
@@ -85,7 +87,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('ping')
-  handlePing(@ConnectedSocket() client: Socket): void {
+  handlePing(@ConnectedSocket() client: Socket) {
     const authClient = client as AuthenticatedSocket;
 
     // Check authentication
@@ -105,10 +107,14 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       `Ping from authenticated user_id=${user.userId}, socket_id=${client.id}`,
     );
 
-    authClient.emit('pong', {
-      timestamp: new Date().toISOString(),
-      userId: user.userId,
-    });
+    const payload = this.pingController.buildPingPayload(user);
+
+    // Emit event for clients listening via socket.on('pong')
+    authClient.emit('pong', payload);
+
+    // Also return payload so Socket.IO ACK callbacks or REST-like clients
+    // receive a non-empty JSON response
+    return payload;
   }
 
   /**

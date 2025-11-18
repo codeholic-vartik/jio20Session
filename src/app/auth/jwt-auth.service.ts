@@ -20,6 +20,10 @@ export interface AuthenticatedUser {
   userId: number;
   userUuid: string;
   email?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  username?: string | null;
+  phoneNumber?: string | null;
   jti?: string;
 }
 
@@ -138,6 +142,10 @@ export class JwtAuthService {
           id: true,
           uuid: true,
           email: true,
+          first_name: true,
+          last_name: true,
+          username: true,
+          phone_number: true,
           is_blocked: true,
           blocked_until: true,
           is_active: true,
@@ -174,6 +182,10 @@ export class JwtAuthService {
         userId: user.id,
         userUuid: user.uuid,
         email: user.email || undefined,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        username: user.username,
+        phoneNumber: user.phone_number,
         jti: decoded.jti,
       };
     } catch (error) {
