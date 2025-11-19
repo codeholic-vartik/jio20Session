@@ -16,13 +16,21 @@ import {
 } from '../auth/types/socket.types';
 import type { AuthenticatedUser } from '../auth/jwt-auth.service';
 import { SocketPingController } from './controllers/ping.controller';
-import { DatabaseService } from '../../common/database/database.service';
-import { SessionCounterService } from './realtime/session-counter.service';
-import { JoinTaxonomySalesDto } from './dto/join-taxonomy-sales.dto';
+import {
+  SocketTaxonomyController,
+  type TaxonomySalesJoinedPayload,
+} from './controllers/taxonomy.controller';
+import { SessionSalesPayloadDto } from './dto/session-sales.dto';
+import {
+  ERROR_MESSAGES,
+  getSocketRoomKey,
+  SOCKET_EVENTS,
+  ERROR_CODES,
+  KEYS,
+} from './constants';
 
 const WEBSOCKET_NAMESPACE =
   process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
-
 @WebSocketGateway({
   namespace: WEBSOCKET_NAMESPACE,
   cors: { origin: true, credentials: true },
@@ -35,9 +43,8 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   constructor(
     private readonly jwtAuthService: JwtAuthService,
-    private readonly database: DatabaseService,
-    private readonly sessionCounter: SessionCounterService,
     private readonly pingController: SocketPingController,
+    private readonly taxonomyController: SocketTaxonomyController,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket) {
@@ -48,8 +55,8 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       if (!token) {
         this.rejectConnection(
           client,
-          'Authentication required',
-          'AUTH_REQUIRED',
+          ERROR_MESSAGES.AUTHENTICATION_REQUIRED,
+          ERROR_CODES.AUTH_REQUIRED,
         );
         return;
       }
@@ -68,15 +75,17 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logConnection(client, userInfo);
 
       // Send authentication success event
-      client.emit('authenticated', {
+      client.emit(SOCKET_EVENTS.AUTHENTICATED, {
         userId: userInfo.userId,
         userUuid: userInfo.userUuid,
         message: 'Successfully authenticated',
       });
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : 'Authentication failed';
-      this.rejectConnection(client, errorMessage, 'AUTH_FAILED');
+        error instanceof Error
+          ? error.message
+          : ERROR_MESSAGES.AUTHENTICATION_FAILED;
+      this.rejectConnection(client, errorMessage, ERROR_CODES.AUTH_FAILED);
     }
   }
 
@@ -86,7 +95,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.debug(`Client disconnected: ${client.id}, userId: ${userId}`);
   }
 
-  @SubscribeMessage('ping')
+  @SubscribeMessage(SOCKET_EVENTS.PING)
   handlePing(@ConnectedSocket() client: Socket) {
     const authClient = client as AuthenticatedSocket;
 
@@ -95,10 +104,11 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.warn(
         `Ping from unauthenticated client: socket_id=${client.id}`,
       );
-      authClient.emit('error', {
-        message: 'Authentication required',
-        code: 'AUTH_REQUIRED',
+      authClient.emit(SOCKET_EVENTS.ERROR, {
+        message: ERROR_MESSAGES.AUTHENTICATION_REQUIRED,
+        code: ERROR_CODES.AUTH_REQUIRED,
       });
+
       return;
     }
 
@@ -110,218 +120,100 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const payload = this.pingController.buildPingPayload(user);
 
     // Emit event for clients listening via socket.on('pong')
-    authClient.emit('pong', payload);
+    authClient.emit(SOCKET_EVENTS.PONG, payload);
 
     // Also return payload so Socket.IO ACK callbacks or REST-like clients
     // receive a non-empty JSON response
     return payload;
   }
 
-  /**
-   * Join a taxonomy term's sales updates channel
-   * Returns current sales count, taxonomy term info, session profiles, and upcoming sessions
-   */
-  @SubscribeMessage('join:taxonomy:sales')
-  async handleJoinTaxonomySales(
+  @SubscribeMessage(SOCKET_EVENTS.SESSION_SALES)
+  async handleSessionSales(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: JoinTaxonomySalesDto,
-  ): Promise<void> {
+    @MessageBody() payload: SessionSalesPayloadDto | string,
+  ): Promise<TaxonomySalesJoinedPayload | void> {
     const authClient = client as AuthenticatedSocket;
+    // Check authentication
     if (!isAuthenticatedSocket(authClient) || !authClient.user) {
-      authClient.emit('error', {
-        message: 'Authentication required',
-        code: 'AUTH_REQUIRED',
+      authClient.emit(SOCKET_EVENTS.ERROR, {
+        message: ERROR_MESSAGES.AUTHENTICATION_REQUIRED,
+        code: ERROR_CODES.AUTH_REQUIRED,
       });
+      this.logger.debug(`Authentication required`);
       return;
     }
 
-    try {
-      const { taxonomy_term_id } = data;
-
-      this.logger.log(
-        `Client ${authClient.id} requested taxonomy sales join for term=${taxonomy_term_id}`,
-      );
-
-      if (!taxonomy_term_id) {
-        authClient.emit('error', {
-          message: 'taxonomy_term_id is required',
-          code: 'INVALID_REQUEST',
-        });
-        return;
-      }
-
-      // Join the taxonomy-specific room
-      const roomName = `taxonomy:sales:${taxonomy_term_id}`;
-      await authClient.join(roomName);
-
-      this.logger.debug(
-        `Client ${authClient.id} joined taxonomy sales room: ${roomName}`,
-      );
-
-      // Fetch taxonomy term info
-      const taxonomyTerm = await this.database.taxonomy_terms.findUnique({
-        where: { tmuid: taxonomy_term_id },
-        select: {
-          id: true,
-          tmuid: true,
-          name: true,
-          slug: true,
-          description: true,
-          is_active: true,
-          taxonomy_id: true,
-        },
+    if (!payload) {
+      authClient.emit(SOCKET_EVENTS.ERROR, {
+        message: ERROR_MESSAGES.REQUEST_BODY_REQUIRED,
+        code: ERROR_CODES.INVALID_REQUEST,
       });
-
-      if (!taxonomyTerm) {
-        authClient.emit('error', {
-          message: `Taxonomy term not found: ${taxonomy_term_id}`,
-          code: 'TAXONOMY_NOT_FOUND',
-        });
-        return;
-      }
-
-      // Get session profiles linked to this taxonomy term
-      const sessionTaxonomyTerms =
-        await this.database.session_taxonomy_terms.findMany({
-          where: {
-            term_id: taxonomyTerm.id,
-            is_enabled: true,
-          },
-          include: {
-            session_profiles: {
-              select: {
-                id: true,
-                spuid: true,
-                title: true,
-                description: true,
-                max_slots: true,
-                max_sessions: true,
-                sales_trigger_count: true,
-                is_active: true,
-              },
-            },
-          },
-        });
-
-      const sessionProfiles = sessionTaxonomyTerms.map(
-        (stt) => stt.session_profiles,
-      );
-
-      // Get current and upcoming sessions for these session profiles
-      const sessionProfileIds = sessionProfiles.map((sp) => sp.id);
-      const sessions =
-        sessionProfileIds.length > 0
-          ? await this.database.sessions.findMany({
-              where: {
-                session_profile_id: { in: sessionProfileIds },
-                is_deleted: false,
-                is_active: true,
-                status: {
-                  in: ['CURRENT', 'UPCOMING'],
-                },
-              },
-              select: {
-                id: true,
-                suid: true,
-                session_profile_id: true,
-                name: true,
-                start_time: true,
-                end_time: true,
-                status: true,
-                current_sales_count: true,
-                current_participant_count: true,
-              },
-              orderBy: [{ priority_position: 'asc' }, { start_time: 'asc' }],
-            })
-          : [];
-
-      // Get current sales count from Redis (real-time counter)
-      // This is the most up-to-date count from pub/sub updates
-      let salesCount = await this.sessionCounter.getSalesCount(
-        'taxonomy',
-        taxonomy_term_id,
-      );
-
-      // If Redis doesn't have the count (returns 0), get from the upcoming session as fallback
-      // There is only 1 upcoming session per session profile, so we use that session's count
-      let salesCountSource: 'redis' | 'database' | 'none' =
-        salesCount > 0 ? 'redis' : 'none';
-
-      if (salesCount === 0 && sessions.length > 0) {
-        // Get the first upcoming session's sales count (there's only 1 per profile)
-        const upcomingSession =
-          sessions.find((s) => s.status === 'UPCOMING') || sessions[0]; // Fallback to first session if no UPCOMING found
-
-        const dbSalesCount = upcomingSession?.current_sales_count || 0;
-
-        // If database has a count, use it and optionally sync to Redis
-        if (dbSalesCount > 0) {
-          salesCount = dbSalesCount;
-          salesCountSource = 'database';
-          // Optionally sync to Redis for future queries (non-blocking)
-          this.sessionCounter
-            .setSalesCount('taxonomy', taxonomy_term_id, dbSalesCount)
-            .catch((err) => {
-              this.logger.warn(
-                `Failed to sync sales count to Redis: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            });
-        }
-      }
-
-      if (salesCountSource === 'none') {
-        this.logger.warn(
-          `Sales count unavailable for term=${taxonomy_term_id} (no Redis entry and no session fallback). Returning 0.`,
-        );
-      }
-
-      this.logger.log(
-        `Prepared taxonomy snapshot for term=${taxonomy_term_id}: sales_count=${salesCount} (source=${salesCountSource}), session_profiles=${sessionProfiles.length}, sessions=${sessions.length}`,
-      );
-
-      // Send initial data to client
-      authClient.emit('taxonomy:sales:joined', {
-        taxonomy_term: {
-          id: taxonomyTerm.id,
-          tmuid: taxonomyTerm.tmuid,
-          name: taxonomyTerm.name,
-          slug: taxonomyTerm.slug,
-          description: taxonomyTerm.description,
-          is_active: taxonomyTerm.is_active,
-        },
-        sales_count: salesCount,
-        session_profiles: sessionProfiles,
-        sessions: sessions.map((s) => ({
-          id: s.id,
-          suid: s.suid,
-          session_profile_id: s.session_profile_id,
-          name: s.name,
-          start_time: s.start_time?.toISOString(),
-          end_time: s.end_time?.toISOString(),
-          status: s.status,
-          current_sales_count: s.current_sales_count,
-          current_participant_count: s.current_participant_count,
-        })),
-        joined_at: new Date().toISOString(),
-      });
-
-      this.logger.debug(
-        `Sent taxonomy sales data to client ${authClient.id} for term ${taxonomy_term_id}`,
-      );
-    } catch (error) {
-      const errorMessage =
-        error instanceof Error
-          ? error.message
-          : 'Failed to join taxonomy sales';
-      this.logger.error(
-        `Error joining taxonomy sales: ${errorMessage}`,
-        error instanceof Error ? error.stack : undefined,
-      );
-      authClient.emit('error', {
-        message: errorMessage,
-        code: 'JOIN_ERROR',
-      });
+      this.logger.debug('Session sales request missing payload');
+      return;
     }
+
+    // Deserialize payload if it's a string (DTO handles its own deserialization)
+    const deserializedPayload = SessionSalesPayloadDto.deserialize(payload);
+
+    this.logger.debug(
+      `Session sales payload: ${JSON.stringify(deserializedPayload, null, 2)}`,
+    );
+
+    const { session_id, session_profile_id, taxonomy_term_id } =
+      deserializedPayload;
+
+    // Check if at least one identifier is provided
+    if (!session_id && !session_profile_id && !taxonomy_term_id) {
+      authClient.emit(SOCKET_EVENTS.ERROR, {
+        message: ERROR_MESSAGES.IDENTIFIER_REQUIRED,
+        code: ERROR_CODES.INVALID_REQUEST,
+      });
+      this.logger.debug(
+        `Invalid request: session_id=${session_id}, session_profile_id=${session_profile_id}, taxonomy_term_id=${taxonomy_term_id}`,
+      );
+      return;
+    }
+
+    this.logger.debug(
+      `Session sales requested: session_id=${session_id}, session_profile_id=${session_profile_id}, taxonomy_term_id=${taxonomy_term_id}`,
+    );
+
+    if (!taxonomy_term_id) {
+      authClient.emit(SOCKET_EVENTS.ERROR, {
+        message: ERROR_MESSAGES.TAXONOMY_TERM_ID_REQUIRED,
+        code: ERROR_CODES.INVALID_REQUEST,
+      });
+      this.logger.debug('taxonomy_term_id is required for session sales data');
+      return;
+    }
+
+    const response = await this.taxonomyController.buildJoinResponse(
+      authClient,
+      taxonomy_term_id,
+    );
+
+    this.logger.debug(
+      `Session sales response: ${JSON.stringify(response, null, 2)}`,
+    );
+
+    const eventKey = getSocketRoomKey(
+      'session',
+      'sales',
+      response.taxonomy_term.tmuid,
+    );
+
+    authClient.emit(eventKey, response);
+
+    const userRooms = new Set<string>([
+      KEYS.getUserRoom(authClient.user.userId),
+      KEYS.getUserRoom(authClient.user.userUuid),
+    ]);
+    for (const room of userRooms) {
+      authClient.to(room).emit(eventKey, response);
+    }
+
+    // Return the response to the client (Socket.IO ACK)
+    return response;
   }
 
   /**
@@ -356,10 +248,12 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (isWinner !== undefined) payload.is_winner = isWinner;
 
     // Broadcast to all clients (uses Redis adapter for multi-server scaling)
-    this.server.emit('participant:count:update', payload);
+    this.server.emit(SOCKET_EVENTS.PARTICIPANT_COUNT_UPDATE, payload);
 
     // Also broadcast to session-specific room (using suid)
-    this.server.to(`session:${suid}`).emit('participant:count:update', payload);
+    this.server
+      .to(KEYS.getSessionRoom(suid))
+      .emit(SOCKET_EVENTS.PARTICIPANT_COUNT_UPDATE, payload);
 
     // Only log at debug level to reduce overhead
     this.logger.debug(
@@ -393,20 +287,20 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     // Broadcast to all clients (uses Redis adapter for multi-server scaling)
-    this.server.emit('sales:count:update', payload);
+    this.server.emit(SOCKET_EVENTS.SALES_COUNT_UPDATE, payload);
 
     // Broadcast to session-specific room (if numeric ID)
     if (typeof sessionId === 'number') {
       this.server
-        .to(`session:${sessionId}`)
-        .emit('sales:count:update', payload);
+        .to(KEYS.getSessionRoom(sessionId))
+        .emit(SOCKET_EVENTS.SALES_COUNT_UPDATE, payload);
     }
 
     // Broadcast to taxonomy-specific room (if string ID like "ttm_...")
     if (typeof sessionId === 'string' && sessionId.startsWith('ttm_')) {
       this.server
-        .to(`taxonomy:sales:${sessionId}`)
-        .emit('sales:count:update', payload);
+        .to(KEYS.getTaxonomySalesRoom(sessionId))
+        .emit(SOCKET_EVENTS.SALES_COUNT_UPDATE, payload);
     }
 
     // Only log at debug level to reduce overhead
@@ -425,7 +319,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ): void {
     this.logger.warn(`Connection rejected for client ${client.id}: ${message}`);
 
-    client.emit('error', { message, code });
+    client.emit(SOCKET_EVENTS.ERROR, { message, code });
     client.disconnect();
   }
 
@@ -436,8 +330,8 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     client: AuthenticatedSocket,
     userInfo: AuthenticatedUser,
   ): void {
-    void client.join(`user:${userInfo.userId}`);
-    void client.join(`user:${userInfo.userUuid}`);
+    void client.join(KEYS.getUserRoom(userInfo.userId));
+    void client.join(KEYS.getUserRoom(userInfo.userUuid));
   }
 
   /**

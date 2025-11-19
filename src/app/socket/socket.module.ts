@@ -2,27 +2,24 @@ import { Module, type Provider } from '@nestjs/common';
 import { SocketGateway } from './socket.gateway';
 import { AuthModule } from '../auth/auth.module';
 import { BullmqModule } from '../jobs/bullmq.module';
-import { SessionRealtimeService } from './realtime/session-realtime.service';
-import { SessionCounterService } from './realtime/session-counter.service';
-import { SessionPublisherService } from './realtime/session-publisher.service';
+
+import { SessionCounterService } from './services/session-counter.service';
+
 import { PingService } from './services/ping.service';
 import { SocketPingController } from './controllers/ping.controller';
+import { TaxonomySalesService } from './services/taxonomy-sales.service';
+import { SocketTaxonomyController } from './controllers/taxonomy.controller';
 
 const SOCKET_PROVIDERS = [
   SocketGateway,
-  SessionRealtimeService,
   SessionCounterService,
-  SessionPublisherService,
   PingService,
   SocketPingController,
+  TaxonomySalesService,
+  SocketTaxonomyController,
 ] as const;
 
-const SOCKET_EXPORTS = [
-  SocketGateway,
-  SessionRealtimeService,
-  SessionCounterService,
-  SessionPublisherService,
-] as const;
+const SOCKET_EXPORTS = [SocketGateway, SessionCounterService] as const;
 
 @Module({
   imports: [AuthModule, BullmqModule],
