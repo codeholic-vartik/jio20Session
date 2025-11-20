@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { DatabaseService } from '../../common/database/database.service';
 import type { Socket } from 'socket.io';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, frontend_token_blacklist } from '@prisma/client';
 
 export interface JwtPayload {
   sub: string | number; // user ID
@@ -88,14 +88,31 @@ export class JwtAuthService {
       }
 
       // Check if token is blacklisted (frontend users use frontend_token_blacklist)
+      // First check by JTI (JWT ID) - most efficient and recommended
+      let blacklisted: frontend_token_blacklist | null = null;
       if (decoded.jti) {
-        const blacklisted =
-          await this.prisma.frontend_token_blacklist.findUnique({
-            where: { jti: decoded.jti },
-          });
+        blacklisted = await this.prisma.frontend_token_blacklist.findUnique({
+          where: { jti: decoded.jti },
+        });
+      }
 
-        if (blacklisted) {
-          this.logger.warn(`Blacklisted token used: ${decoded.jti}`);
+      // Fallback: If no JTI or not found by JTI, check by token string itself
+      if (!blacklisted) {
+        blacklisted = await this.prisma.frontend_token_blacklist.findFirst({
+          where: { token: cleanToken },
+        });
+      }
+
+      if (blacklisted) {
+        // Check if blacklist entry has expired (cleanup old entries)
+        if (blacklisted.expires_at && blacklisted.expires_at < new Date()) {
+          this.logger.debug(
+            `Blacklist entry expired for jti=${blacklisted.jti}, skipping check`,
+          );
+        } else {
+          this.logger.warn(
+            `Blacklisted token used: jti=${blacklisted.jti || 'N/A'}, reason=${blacklisted.reason || 'N/A'}`,
+          );
           throw new UnauthorizedException('Token has been revoked');
         }
       }
