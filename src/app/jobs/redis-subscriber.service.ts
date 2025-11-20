@@ -12,10 +12,12 @@ import { SessionService } from '../session/session.service';
 import { SocketGateway } from '../socket/socket.gateway';
 import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
+import { REDIS_CHANNELS } from '../socket/constants';
+import { SessionStatus } from 'src/common/types/enums';
 
-const THRESHOLD_REACHED_CHANNEL = 'session:sales:threshold_reached';
-const SALES_UPDATE_CHANNEL = 'session:sales:update';
-const PARTICIPANT_UPDATE_PATTERN = 'session:participant:*';
+const THRESHOLD_REACHED_CHANNEL = REDIS_CHANNELS.THRESHOLD_REACHED;
+const SALES_UPDATE_CHANNEL = REDIS_CHANNELS.SALES_UPDATE;
+const PARTICIPANT_UPDATE_PATTERN = REDIS_CHANNELS.PARTICIPANT_UPDATE_PATTERN;
 
 /**
  * Payload structure for threshold reached events from Redis pub/sub
@@ -43,11 +45,18 @@ interface ParticipantUpdatePayload {
 /**
  * Payload structure for sales update events from Redis pub/sub
  */
-interface SalesUpdatePayload {
+export interface SalesUpdatePayload {
   session_id: number | string;
   count: number;
   session_profile_id: number | string;
+
   created_at?: string;
+  taxonomy_term_uid?: string;
+
+  sales_trigger_count?: number;
+  max_slots?: number;
+  max_sessions?: number;
+  session_status?: keyof typeof SessionStatus;
 }
 
 /**
@@ -624,22 +633,6 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
       // Create session when threshold is reached
       await this.createSessionOnThreshold(sessionId, sessionProfileId);
 
-      //   // Add job to the session queue
-      //   await this.sessionQueue.add(
-      //     'threshold-reached',
-      //     {
-      //       sessionId,
-      //       sessionProfileId,
-      //     },
-      //     {
-      //       attempts: 3,
-      //       backoff: {
-      //         type: 'exponential',
-      //         delay: 2000,
-      //       },
-      //     },
-      //   );
-
       this.logger.log(
         `Queued threshold-reached job: session_id=${sessionId}, session_profile_id=${sessionProfileId}`,
       );
@@ -766,11 +759,7 @@ export class RedisSubscriberService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
-      this.socketGateway.broadcastSalesCountUpdate(
-        sessionId,
-        payload.count,
-        sessionProfileId,
-      );
+      this.socketGateway.broadcastSalesCountUpdate(payload);
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
