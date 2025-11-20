@@ -29,6 +29,7 @@ import {
   KEYS,
 } from './constants';
 import { SalesUpdatePayload } from '../jobs/redis-subscriber.service';
+import { calculateSalesPercentages } from './utils/sales-percentage.util';
 
 const WEBSOCKET_NAMESPACE =
   process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
@@ -277,25 +278,18 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * Supports both session IDs (number) and taxonomy term IDs (string)
    */
   broadcastSalesCountUpdate(data: SalesUpdatePayload): void {
-    // Calculate max_sales from max_slots and max_sessions
-    const maxSales =
-      data.sales_trigger_count && data.count ? data.sales_trigger_count : null;
+    // Calculate max_sales from sales_trigger_count
+    const maxSales = data.sales_trigger_count || null;
 
-    // Calculate percentage reached and left
-    let percentageSalReached: number | null = null;
-    let percentageSaleLeft: number | null = null;
-
-    if (maxSales && maxSales > 0) {
-      percentageSalReached = Math.round((data.count / maxSales) * 100);
-      percentageSaleLeft = Math.round(
-        ((maxSales - data.count) / maxSales) * 100,
-      );
-    }
+    // Calculate percentage reached and left using utility function
+    const { percentageSaleReached, percentageSaleLeft } =
+      calculateSalesPercentages(data.count, maxSales);
 
     const payload = {
       ss: data.session_status,
-      psr: percentageSalReached,
+      psr: percentageSaleReached,
       psl: percentageSaleLeft,
+      sales_count: data.count,
       ca: new Date().toISOString(),
     };
 
@@ -314,7 +308,7 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     // Only log at debug level to reduce overhead
     this.logger.debug(
-      `Broadcasted sales update: taxonomy_term_uid=${data.taxonomy_term_uid}, session_status=${data.session_status}, percentage_sal_reached=${percentageSalReached}, percentage_sale_left=${percentageSaleLeft}`,
+      `Broadcasted sales update: taxonomy_term_uid=${data.taxonomy_term_uid}, session_status=${data.session_status}, percentage_sal_reached=${percentageSaleReached}, percentage_sale_left=${percentageSaleLeft}`,
     );
   }
 

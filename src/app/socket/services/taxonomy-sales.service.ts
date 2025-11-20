@@ -15,6 +15,9 @@ export interface TaxonomySalesSnapshot {
     description: string;
     spuid: string;
     is_active: boolean;
+    max_slots: number | null;
+    sales_trigger_count: number | null;
+    max_sessions: number | null;
   }>;
   sessions: Array<{
     suid: string;
@@ -76,6 +79,9 @@ export class TaxonomySalesService {
               title: true,
               description: true,
               is_active: true,
+              max_slots: true,
+              sales_trigger_count: true,
+              max_sessions: true,
             },
           },
         },
@@ -184,6 +190,9 @@ export class TaxonomySalesService {
         description: sp.description ?? '',
         spuid: sp.spuid,
         is_active: sp.is_active,
+        max_slots: sp.max_slots,
+        sales_trigger_count: sp.sales_trigger_count,
+        max_sessions: sp.max_sessions,
       })),
       sessions: sessions.map((s) => ({
         suid: s.suid,

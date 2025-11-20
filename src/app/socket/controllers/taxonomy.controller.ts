@@ -4,9 +4,15 @@ import {
   TaxonomySalesService,
   type TaxonomySalesSnapshot,
 } from '../services/taxonomy-sales.service';
+import { calculateSalesPercentages } from '../utils/sales-percentage.util';
 
 export interface TaxonomySalesJoinedPayload extends TaxonomySalesSnapshot {
-  updated_at: string;
+  // Compact format fields matching broadcastSalesCountUpdate response
+  ss?: string; // Session status
+  psr?: number | null; // Percentage sale reached
+  psl?: number | null; // Percentage sale left
+  sales_count: number; // Sales count (already in snapshot, but explicit here)
+  ca: string; // Created at (same as updated_at)
 }
 
 @Injectable()
@@ -26,9 +32,30 @@ export class SocketTaxonomyController {
     const snapshot =
       await this.taxonomySalesService.buildSalesSnapshot(taxonomyTermId);
 
+    // Get session status from first session if available
+    const sessionStatus = snapshot.sessions[0]?.status || null;
+
+    // Calculate max sales from first session profile
+    // Formula: max_sessions * sales_trigger_count (same as used in broadcastSalesCountUpdate)
+    const firstSessionProfile = snapshot.session_profiles[0];
+    let maxSales: number | null = null;
+
+    maxSales = firstSessionProfile.sales_trigger_count ?? null;
+
+    // Calculate percentages using utility function
+    const { percentageSaleReached, percentageSaleLeft } =
+      calculateSalesPercentages(snapshot.sales_count, maxSales);
+
+    const updatedAt = new Date().toISOString();
+
     const payload: TaxonomySalesJoinedPayload = {
       ...snapshot,
-      updated_at: new Date().toISOString(),
+      // Compact format fields matching broadcastSalesCountUpdate response
+      ss: sessionStatus || undefined,
+      psr: percentageSaleReached,
+      psl: percentageSaleLeft,
+      sales_count: snapshot.sales_count, // Explicit for consistency
+      ca: updatedAt, // Created at (same as updated_at)
     };
 
     this.logger.debug(
