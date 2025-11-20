@@ -28,6 +28,7 @@ import {
   ERROR_CODES,
   KEYS,
 } from './constants';
+import { SalesUpdatePayload } from '../jobs/redis-subscriber.service';
 
 const WEBSOCKET_NAMESPACE =
   process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
@@ -202,8 +203,17 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       response.taxonomy_term.tmuid,
     );
 
+    // Join the taxonomy sales room for real-time updates (same format as eventKey)
+    await authClient.join(eventKey);
+
+    this.logger.debug(
+      `Client ${authClient.id} joined taxonomy sales room: ${eventKey}`,
+    );
+
+    // Emit initial response to the client
     authClient.emit(eventKey, response);
 
+    // Also broadcast to user rooms (for other sessions of the same user)
     const userRooms = new Set<string>([
       KEYS.getUserRoom(authClient.user.userId),
       KEYS.getUserRoom(authClient.user.userUuid),
@@ -266,46 +276,45 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
    * Optimized for high concurrency (100k+ users)
    * Supports both session IDs (number) and taxonomy term IDs (string)
    */
-  broadcastSalesCountUpdate(
-    sessionId: number | string,
-    count: number,
-    sessionProfileId?: number,
-  ): void {
-    const payload: {
-      session_id: number | string;
-      count: number;
-      updated_at: string;
-      session_profile_id?: number;
-    } = {
-      session_id: sessionId,
-      count,
-      updated_at: new Date().toISOString(),
+  broadcastSalesCountUpdate(data: SalesUpdatePayload): void {
+    // Calculate max_sales from max_slots and max_sessions
+    const maxSales =
+      data.sales_trigger_count && data.count ? data.sales_trigger_count : null;
+
+    // Calculate percentage reached and left
+    let percentageSalReached: number | null = null;
+    let percentageSaleLeft: number | null = null;
+
+    if (maxSales && maxSales > 0) {
+      percentageSalReached = Math.round((data.count / maxSales) * 100);
+      percentageSaleLeft = Math.round(
+        ((maxSales - data.count) / maxSales) * 100,
+      );
+    }
+
+    const payload = {
+      ss: data.session_status,
+      psr: percentageSalReached,
+      psl: percentageSaleLeft,
+      ca: new Date().toISOString(),
     };
 
-    if (sessionProfileId !== undefined) {
-      payload.session_profile_id = sessionProfileId;
-    }
+    // Use the same room format that clients join and listen to
+    const taxonomyRoom = getSocketRoomKey(
+      'session',
+      'sales',
+      data.taxonomy_term_uid,
+    );
+    // Emit to the room with the same event name that clients listen to
+    this.server.to(taxonomyRoom).emit(taxonomyRoom, payload);
 
-    // Broadcast to all clients (uses Redis adapter for multi-server scaling)
-    this.server.emit(SOCKET_EVENTS.SALES_COUNT_UPDATE, payload);
-
-    // Broadcast to session-specific room (if numeric ID)
-    if (typeof sessionId === 'number') {
-      this.server
-        .to(KEYS.getSessionRoom(sessionId))
-        .emit(SOCKET_EVENTS.SALES_COUNT_UPDATE, payload);
-    }
-
-    // Broadcast to taxonomy-specific room (if string ID like "ttm_...")
-    if (typeof sessionId === 'string' && sessionId.startsWith('ttm_')) {
-      this.server
-        .to(KEYS.getTaxonomySalesRoom(sessionId))
-        .emit(SOCKET_EVENTS.SALES_COUNT_UPDATE, payload);
-    }
+    this.logger.debug(
+      `Emitted to taxonomy room: ${taxonomyRoom} with event: ${taxonomyRoom}`,
+    );
 
     // Only log at debug level to reduce overhead
     this.logger.debug(
-      `Broadcasted sales update: session_id=${sessionId}, count=${count}`,
+      `Broadcasted sales update: taxonomy_term_uid=${data.taxonomy_term_uid}, session_status=${data.session_status}, percentage_sal_reached=${percentageSalReached}, percentage_sale_left=${percentageSaleLeft}`,
     );
   }
 

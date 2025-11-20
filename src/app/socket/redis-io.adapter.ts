@@ -163,7 +163,7 @@ export class RedisIoAdapter extends IoAdapter {
     // Optimized Socket.IO options for high concurrency (100k+ users)
     const opts: ServerOptions = {
       cors: { origin: true, credentials: true },
-      transports: ['websocket', 'polling'],
+      transports: ['websocket'],
       // Connection timeout: 45 seconds (increase for slow networks)
       connectTimeout: 45000,
       // Ping interval: 25 seconds (balance between detection and overhead)
@@ -179,19 +179,22 @@ export class RedisIoAdapter extends IoAdapter {
       // Per-message deflate compression (reduce bandwidth, slight CPU cost)
       // Enable only if bandwidth is more constrained than CPU
       perMessageDeflate: {
-        threshold: 1024, // Only compress messages > 1KB
+        threshold: 256, // Only compress messages > 1KB
         zlibDeflateOptions: {
-          chunkSize: 1024,
           memLevel: 7,
-          level: 3, // Balanced compression (3 = good balance)
+          level: 4, // Balanced compression (3 = good balance)
         },
         zlibInflateOptions: {
-          chunkSize: 1024,
           memLevel: 7,
         },
         // Client must support compression
         clientNoContextTakeover: true,
         serverNoContextTakeover: true,
+        maxHttpBufferSize: 1e6,
+        pingInterval: 25000,
+        pingTimeout: 20000,
+        upgradeTimeout: 10000,
+        connectTimeout: 45000,
       },
       ...options,
     } as ServerOptions;
