@@ -67,6 +67,42 @@ const envSchema = z.object({
     ),
   RAZORPAY_CLIENT: z.string().optional(),
   RAZORPAY_SECRET: z.string().optional(),
+  SESSION_ENCRYPTION_KEY: z
+    .string()
+    .optional()
+    .describe(
+      'SHA-256 hash (hex string) for encrypting coupon codes. Must be 64 hex characters.',
+    ),
+  COUPON_CODE_PREFIX: z.string().optional().default('SES'),
+  COUPON_RANDOM_SUFFIX_LENGTH: z
+    .string()
+    .optional()
+    .default('6')
+    .refine(
+      (value) =>
+        /^\d+$/.test(value) &&
+        Number.parseInt(value, 10) > 0 &&
+        Number.parseInt(value, 10) <= 20,
+      {
+        message:
+          'COUPON_RANDOM_SUFFIX_LENGTH must be a positive integer between 1 and 20',
+      },
+    ),
+  COUPON_SCUID_PREFIX: z.string().optional().default('sc'),
+  COUPON_SCUID_NANO_LENGTH: z
+    .string()
+    .optional()
+    .default('8')
+    .refine(
+      (value) =>
+        /^\d+$/.test(value) &&
+        Number.parseInt(value, 10) > 0 &&
+        Number.parseInt(value, 10) <= 20,
+      {
+        message:
+          'COUPON_SCUID_NANO_LENGTH must be a positive integer between 1 and 20',
+      },
+    ),
 });
 
 function validateEnv(config: Record<string, unknown>) {
