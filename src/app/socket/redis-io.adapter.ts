@@ -163,7 +163,7 @@ export class RedisIoAdapter extends IoAdapter {
     // Optimized Socket.IO options for high concurrency (100k+ users)
     const opts: ServerOptions = {
       cors: { origin: true, credentials: true },
-      transports: ['websocket'],
+      transports: ['polling', 'websocket'],
       // Connection timeout: 45 seconds (increase for slow networks)
       connectTimeout: 45000,
       // Ping interval: 25 seconds (balance between detection and overhead)
