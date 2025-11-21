@@ -12,6 +12,7 @@ import { ObservabilityModule } from '../common/observability/observability.modul
 import { SessionModule } from './session/session.module';
 import { LoggerModule } from '../common/logger/logger.module';
 import { AuthModule } from './auth/auth.module';
+import { CouponModule } from './coupon/coupon.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { AuthModule } from './auth/auth.module';
     MetricsModule,
     ObservabilityModule,
     SessionModule,
+    CouponModule,
   ],
   controllers: [AppController],
   providers: [AppService],
