@@ -67,11 +67,18 @@ async function bootstrap() {
   const isHttps =
     process.env.NODE_ENV === 'production' || process.env.HTTPS === 'true';
   const wsProtocol = isHttps ? 'wss' : 'ws';
-  const host = process.env.HOST || 'localhost';
+  const host = process.env.HOST || process.env.WEBSOCKET_HOST || 'localhost';
   const wsNamespace = process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
-  const wsUrl = `${wsProtocol}://${host}:${port}${wsNamespace}`;
+  // When behind reverse proxy, don't include port in URL (use standard ports)
+  const includePort = process.env.WEBSOCKET_INCLUDE_PORT !== 'false';
+  const standardPort = isHttps ? 443 : 80;
+  const wsUrl =
+    port === standardPort || !includePort
+      ? `${wsProtocol}://${host}${wsNamespace}`
+      : `${wsProtocol}://${host}:${port}${wsNamespace}`;
 
-  const asyncApiOptions = new AsyncApiDocumentBuilder()
+  /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+  const asyncApiOptions = (new AsyncApiDocumentBuilder() as any)
     .setTitle('Jio20 Session WebSocket API')
     .setDescription('Socket.IO based realtime API')
     .setVersion('1.0.0')
@@ -88,8 +95,12 @@ async function bootstrap() {
     })
     .build();
 
-  const asyncapiDocument = AsyncApiModule.createDocument(app, asyncApiOptions);
-  await AsyncApiModule.setup('/ws-docs', app, asyncapiDocument);
+  const asyncapiDocument = (AsyncApiModule as any).createDocument(
+    app,
+    asyncApiOptions,
+  );
+  await (AsyncApiModule as any).setup('/ws-docs', app, asyncapiDocument);
+  /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
   // Minimal interactive Socket.IO test UI at /ws-docs/ui (extracted)
   registerWsDocsUi(app);
