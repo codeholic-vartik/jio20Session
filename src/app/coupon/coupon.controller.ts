@@ -1,9 +1,18 @@
-import { Controller, Post, UseGuards, Body, Request } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  UseGuards,
+  Body,
+  Request,
+  Query,
+} from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { CouponService } from './coupon.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -66,5 +75,60 @@ export class CouponController {
     }
 
     return this.couponService.applyCoupon(userId, dto.coupon_code);
+  }
+
+  @Get('status')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get coupon status - check if applied, winner, or in queue',
+  })
+  @ApiQuery({
+    name: 'coupon_code',
+    description: 'Plain text coupon code to check status',
+    example: 'SES-1-1z-83uqO4fId-E5P5HA',
+    required: true,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Coupon status retrieved successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        coupon_code: { type: 'string' },
+        session_suid: { type: 'string', nullable: true },
+        status: {
+          type: 'string',
+          enum: ['not_found', 'not_applied', 'in_queue', 'applied', 'winner'],
+        },
+        is_winner: { type: 'boolean' },
+        is_applied: { type: 'boolean' },
+        in_queue: { type: 'boolean' },
+        position: { type: 'number', nullable: true },
+        applied_at: { type: 'string', format: 'date-time', nullable: true },
+        job_id: { type: 'string', nullable: true },
+        job_state: { type: 'string', nullable: true },
+        message: { type: 'string' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Unauthorized - Invalid or missing JWT token',
+  })
+  async getCouponStatus(
+    @Query('coupon_code') couponCode: string,
+    @Request() req: AuthenticatedRequest,
+  ) {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new Error('User ID not found in request');
+    }
+
+    if (!couponCode) {
+      throw new Error('Coupon code is required');
+    }
+
+    return this.couponService.getCouponStatus(userId, couponCode);
   }
 }

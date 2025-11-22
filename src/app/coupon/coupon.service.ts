@@ -6,6 +6,7 @@ import {
   ConflictException,
   Inject,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { DatabaseService } from '../../common/database/database.service';
 import { CouponGeneratorService } from './utils/coupon-generator.service';
 import { SessionStatus } from '../../common/types/enums/session-status.enum';
@@ -131,6 +132,8 @@ export class CouponService {
     // Step 3: Add to queue with request timestamp for FIFO processing
     // Jobs are processed in order based on request timestamp
     const requestTimestamp = Date.now();
+    // Generate UUID4 for job ID (for job UI tracking)
+    const jobId = randomUUID();
     const job = await this.sessionQueue.add(
       'apply-coupon',
       {
@@ -141,8 +144,8 @@ export class CouponService {
         requestTimestamp,
       },
       {
-        // Unique job ID to prevent duplicates
-        jobId: `apply-coupon-${coupon.id}-${userId}-${requestTimestamp}`,
+        // Unique job ID using UUID4 for job UI tracking
+        jobId,
         // Process in FIFO order (by default BullMQ processes in order)
         removeOnComplete: { age: 3600, count: 100 },
         removeOnFail: { age: 86400 },
@@ -163,6 +166,164 @@ export class CouponService {
       job_id: job.id || '',
       message: 'Coupon application queued successfully. Processing in order.',
       queued_at: new Date(requestTimestamp).toISOString(),
+    };
+  }
+
+  /**
+   * Get coupon status - check if applied, winner, or in queue
+   */
+  async getCouponStatus(
+    userId: number,
+    plainCouponCode: string,
+  ): Promise<{
+    coupon_code: string;
+    session_suid: string | null;
+    status: 'not_found' | 'not_applied' | 'in_queue' | 'applied' | 'winner';
+    is_winner: boolean;
+    is_applied: boolean;
+    in_queue: boolean;
+    position: number | null;
+    applied_at: string | null;
+    job_id: string | null;
+    job_state: string | null;
+    message: string;
+  }> {
+    // Find coupon
+    let coupon = await this.findCouponByCodeForStatus(plainCouponCode);
+    if (!coupon) {
+      coupon = await this.findCouponByUserFallbackForStatus(
+        userId,
+        plainCouponCode,
+      );
+    }
+
+    // Use plain coupon code from input for response
+    const couponCode = plainCouponCode;
+
+    if (!coupon) {
+      return {
+        coupon_code: couponCode,
+        session_suid: null,
+        status: 'not_found',
+        is_winner: false,
+        is_applied: false,
+        in_queue: false,
+        position: null,
+        applied_at: null,
+        job_id: null,
+        job_state: null,
+        message: 'Coupon not found',
+      };
+    }
+
+    // Validate ownership
+    if (coupon.user_id !== userId) {
+      // Get session suid if session_id exists
+      let sessionSuid: string | null = null;
+      if (coupon.session_id) {
+        try {
+          const session = await this.prisma.sessions.findUnique({
+            where: { id: coupon.session_id },
+            select: { suid: true },
+          });
+          sessionSuid = session?.suid || null;
+        } catch (error) {
+          this.logger.warn(
+            `Failed to load session suid: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      return {
+        coupon_code: couponCode,
+        session_suid: sessionSuid,
+        status: 'not_found',
+        is_winner: false,
+        is_applied: false,
+        in_queue: false,
+        position: null,
+        applied_at: null,
+        job_id: null,
+        job_state: null,
+        message: 'Coupon not found or you do not own this coupon',
+      };
+    }
+
+    // Get session suid if session_id exists
+    let sessionSuid: string | null = null;
+    if (coupon.session_id) {
+      try {
+        const session = await this.prisma.sessions.findUnique({
+          where: { id: coupon.session_id },
+          select: { suid: true },
+        });
+        sessionSuid = session?.suid || null;
+      } catch (error) {
+        this.logger.warn(
+          `Failed to load session suid: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    // Check if already applied
+    const isApplied = coupon.is_redeemed && coupon.applied_at !== null;
+    const isWinner =
+      isApplied && coupon.status && coupon.status.toLowerCase() === 'winner';
+    const position = coupon.position || null;
+    const appliedAt = coupon.applied_at
+      ? coupon.applied_at.toISOString()
+      : null;
+
+    // If already applied, return status
+    if (isApplied) {
+      return {
+        coupon_code: couponCode,
+        session_suid: sessionSuid,
+        status: isWinner ? 'winner' : 'applied',
+        is_winner: isWinner,
+        is_applied: true,
+        in_queue: false,
+        position,
+        applied_at: appliedAt,
+        job_id: null,
+        job_state: null,
+        message: isWinner
+          ? 'Coupon applied and you won!'
+          : 'Coupon applied but not a winner',
+      };
+    }
+
+    // Check if in queue
+    const jobInfo = await this.findJobForCoupon(coupon.id, userId);
+
+    if (jobInfo) {
+      return {
+        coupon_code: couponCode,
+        session_suid: sessionSuid,
+        status: 'in_queue',
+        is_winner: false,
+        is_applied: false,
+        in_queue: true,
+        position: null,
+        applied_at: null,
+        job_id: jobInfo.jobId,
+        job_state: jobInfo.state,
+        message: `Coupon application is ${jobInfo.state} in queue`,
+      };
+    }
+
+    // Not applied and not in queue
+    return {
+      coupon_code: couponCode,
+      session_suid: sessionSuid,
+      status: 'not_applied',
+      is_winner: false,
+      is_applied: false,
+      in_queue: false,
+      position: null,
+      applied_at: null,
+      job_id: null,
+      job_state: null,
+      message: 'Coupon has not been applied yet',
     };
   }
 
@@ -230,6 +391,124 @@ export class CouponService {
     }
 
     return result;
+  }
+
+  /**
+   * Find coupon by encrypted code for status check (includes applied coupons)
+   */
+  private async findCouponByCodeForStatus(plainCode: string) {
+    try {
+      const encryptedCode = this.couponGenerator.encryptCode(plainCode);
+      return await this.prisma.session_coupons.findFirst({
+        where: {
+          code: encryptedCode,
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to encrypt coupon code for lookup: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Fallback: Find coupon by scanning user's coupons for status check (includes all coupons)
+   */
+  private async findCouponByUserFallbackForStatus(
+    userId: number,
+    plainCode: string,
+  ) {
+    try {
+      const userCoupons = await this.prisma.session_coupons.findMany({
+        where: {
+          user_id: userId,
+        },
+        take: 25, // Safeguard decrypt attempts
+      });
+
+      for (const userCoupon of userCoupons) {
+        try {
+          const decryptedCode = this.couponGenerator.decryptCode(
+            userCoupon.code,
+          );
+          if (decryptedCode === plainCode) {
+            return userCoupon;
+          }
+        } catch (error) {
+          this.logger.debug(
+            `Failed to decrypt coupon ${userCoupon.scuid}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          continue;
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Fallback error searching user coupons: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return null;
+  }
+
+  /**
+   * Find job for coupon in queue
+   */
+  private async findJobForCoupon(
+    couponId: number,
+    userId: number,
+  ): Promise<{ jobId: string; state: string } | null> {
+    try {
+      // Search for jobs with pattern apply-coupon-{couponId}-{userId}-*
+      // We'll search through waiting, active, and delayed jobs
+      const waiting = await this.sessionQueue.getWaiting(0, 100);
+      const active = await this.sessionQueue.getActive(0, 100);
+      const delayed = await this.sessionQueue.getDelayed(0, 100);
+
+      const allJobs = [...waiting, ...active, ...delayed];
+
+      for (const job of allJobs) {
+        if (
+          job.name === 'apply-coupon' &&
+          job.data &&
+          (job.data as { couponId?: number; userId?: number }).couponId ===
+            couponId &&
+          (job.data as { couponId?: number; userId?: number }).userId === userId
+        ) {
+          const state = await job.getState();
+          return {
+            jobId: job.id || '',
+            state,
+          };
+        }
+      }
+
+      // Also check if there's a recent completed job (within last hour)
+      const completed = await this.sessionQueue.getCompleted(0, 50);
+      for (const job of completed) {
+        if (
+          job.name === 'apply-coupon' &&
+          job.data &&
+          (job.data as { couponId?: number; userId?: number }).couponId ===
+            couponId &&
+          (job.data as { couponId?: number; userId?: number }).userId === userId
+        ) {
+          // Check if job completed recently (within last hour)
+          const finishedOn = job.finishedOn;
+          if (finishedOn && Date.now() - finishedOn < 3600000) {
+            return {
+              jobId: job.id || '',
+              state: 'completed',
+            };
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to find job for coupon: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
+    return null;
   }
 
   /**
