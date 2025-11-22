@@ -223,34 +223,86 @@ export class JwtAuthService {
    * @returns Token string or null
    */
   extractTokenFromSocket(socket: Socket): string | null {
-    // Check auth object (recommended for Socket.IO v4+)
+    // Priority 1: Check auth object
     const authToken: unknown = socket.handshake?.auth?.token;
-    if (typeof authToken === 'string') {
-      return authToken;
+    if (typeof authToken === 'string' && authToken.trim().length > 0) {
+      this.logger.debug('Token extracted from auth.token');
+      return authToken.trim();
     }
 
-    // Check Authorization header (supports "Bearer TOKEN" or just "TOKEN")
-    const authHeader = socket.handshake?.headers?.authorization;
-    if (authHeader && typeof authHeader === 'string') {
-      // Extract token from "Bearer TOKEN" format
-      if (authHeader.startsWith('Bearer ')) {
-        return authHeader.substring(7); // Remove "Bearer " prefix
+    // Also check other auth object properties (some clients may use different keys)
+    const auth = socket.handshake?.auth;
+    if (auth && typeof auth === 'object' && auth !== null) {
+      // Check common auth object variations
+      const authKeys = [
+        'access_token',
+        'accessToken',
+        'jwt',
+        'jwtToken',
+        'bearer',
+      ];
+      for (const key of authKeys) {
+        const value = (auth as Record<string, unknown>)[key];
+        if (typeof value === 'string' && value.trim().length > 0) {
+          this.logger.debug(`Token extracted from auth.${key}`);
+          return value.trim();
+        }
       }
-      return authHeader; // Return as-is if no Bearer prefix
     }
 
-    // Check query parameters (fallback, less secure)
+    // Priority 2: Check Authorization header (case-insensitive)
+    const headers = socket.handshake?.headers || {};
+
+    // Check multiple header name variations (case-insensitive)
+    const authHeaderKeys = ['authorization', 'Authorization', 'AUTHORIZATION'];
+    for (const headerKey of authHeaderKeys) {
+      const authHeader = headers[headerKey as keyof typeof headers];
+      if (authHeader && typeof authHeader === 'string') {
+        let token = authHeader.trim();
+
+        // Extract token from "Bearer TOKEN" format
+        if (token.startsWith('Bearer ') || token.startsWith('bearer ')) {
+          token = token.substring(7).trim();
+        }
+
+        if (token.length > 0) {
+          this.logger.debug(`Token extracted from header.${headerKey}`);
+          return token;
+        }
+      }
+    }
+
+    // Priority 3: Check query parameters (fallback)
     // Query params can be string or string array, handle both
-    const queryTokenRaw = socket.handshake?.query?.token;
-    if (queryTokenRaw) {
-      const queryToken = Array.isArray(queryTokenRaw)
-        ? queryTokenRaw[0]
-        : queryTokenRaw;
-      if (typeof queryToken === 'string') {
-        return queryToken;
+    const query = socket.handshake?.query || {};
+    const queryTokenKeys = [
+      'token',
+      'access_token',
+      'accessToken',
+      'jwt',
+      'jwtToken',
+    ];
+
+    for (const queryKey of queryTokenKeys) {
+      const queryTokenRaw = query[queryKey];
+      if (queryTokenRaw) {
+        const queryToken = Array.isArray(queryTokenRaw)
+          ? queryTokenRaw[0]
+          : queryTokenRaw;
+        if (typeof queryToken === 'string' && queryToken.trim().length > 0) {
+          this.logger.debug(`Token extracted from query.${queryKey}`);
+          return queryToken.trim();
+        }
       }
     }
 
+    // No token found
+    this.logger.warn(
+      `No authentication token found in socket handshake. Client: ${socket.id}, ` +
+        `Auth keys: ${auth ? Object.keys(auth).join(', ') : 'none'}, ` +
+        `Header keys: ${Object.keys(headers).join(', ')}, ` +
+        `Query keys: ${Object.keys(query).join(', ')}`,
+    );
     return null;
   }
 }

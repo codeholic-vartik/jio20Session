@@ -176,6 +176,43 @@ socket.on('error', (error) => {
 });
 ```
 
+**Example with AsyncStorage (React Native):**
+
+```javascript
+import { io } from 'socket.io-client';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const token = await AsyncStorage.getItem('access_token');
+
+const socket = io('https://your-api.com/ws/v1/session/', {
+  transports: ['websocket', 'polling'],
+  auth: {
+    token: token,
+  },
+  reconnection: true,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  reconnectionAttempts: 5,
+});
+
+// Listen for authentication success
+socket.on('authenticated', (data) => {
+  console.log('Authentication successful:', data);
+  // data: { userId: number, userUuid: string, message: string }
+});
+
+// Listen for authentication errors
+socket.on('error', (error) => {
+  if (error.code === 'AUTH_REQUIRED') {
+    console.error('Authentication required - token missing');
+    // Navigate to login screen
+  } else if (error.code === 'AUTH_FAILED') {
+    console.error('Authentication failed:', error.message);
+    // Refresh token or navigate to login screen
+  }
+});
+```
+
 ### Method 2: Authorization Header
 
 ```javascript
