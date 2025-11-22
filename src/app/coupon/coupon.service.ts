@@ -133,7 +133,47 @@ export class CouponService {
     // Jobs are processed in order based on request timestamp
     const requestTimestamp = Date.now();
     // Generate UUID4 for job ID (for job UI tracking)
-    const jobId = randomUUID();
+    // Format: acpn_{couponId}{userId}-{uuid4}
+    // Example: acpn_12345-550e8400-e29b-41d4-a716-446655440000
+    // Shorter format with UUID4 suffix ensures uniqueness for job UI tracking
+    const jobIdPrefix = `acpn_${coupon.id}${userId}`;
+    const uniqueJobId = `${jobIdPrefix}-${randomUUID()}`;
+
+    // Check if there's already a pending job for this coupon+user combination
+    // This prevents duplicate job creation if user clicks apply multiple times
+    try {
+      const existingJobs = await this.sessionQueue.getJobs(
+        ['waiting', 'active', 'delayed'],
+        0,
+        50,
+      );
+
+      const duplicateJob = existingJobs.find(
+        (job) =>
+          job.name === 'apply-coupon' &&
+          job.data &&
+          (job.data as { couponId?: number; userId?: number }).couponId ===
+            coupon.id &&
+          (job.data as { couponId?: number; userId?: number }).userId ===
+            userId,
+      );
+
+      if (duplicateJob) {
+        // Job already exists, return the existing job ID
+        return {
+          success: true,
+          job_id: duplicateJob.id || uniqueJobId,
+          message: 'Coupon application already queued. Processing in order.',
+          queued_at: new Date(requestTimestamp).toISOString(),
+        };
+      }
+    } catch (error) {
+      // If job lookup fails, continue with new job creation
+      this.logger.warn(
+        `Failed to check for duplicate jobs: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     const job = await this.sessionQueue.add(
       'apply-coupon',
       {
@@ -145,7 +185,8 @@ export class CouponService {
       },
       {
         // Unique job ID using UUID4 for job UI tracking
-        jobId,
+        // Includes coupon+user prefix for duplicate detection
+        jobId: uniqueJobId,
         // Process in FIFO order (by default BullMQ processes in order)
         removeOnComplete: { age: 3600, count: 100 },
         removeOnFail: { age: 86400 },
