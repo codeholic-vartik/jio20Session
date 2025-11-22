@@ -51,10 +51,25 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   async handleConnection(client: AuthenticatedSocket) {
     try {
+      // Enhanced logging for debugging
+      this.logger.debug(
+        `Connection attempt from client ${client.id}. ` +
+          `URL: ${client.handshake.url}, ` +
+          `Namespace: ${client.nsp.name}, ` +
+          `Auth keys: ${client.handshake.auth ? Object.keys(client.handshake.auth).join(', ') : 'none'}, ` +
+          `Header keys: ${Object.keys(client.handshake.headers || {}).join(', ')}`,
+      );
+
       // Extract token from socket handshake
       const token = this.jwtAuthService.extractTokenFromSocket(client);
 
       if (!token) {
+        // Enhanced error logging
+        this.logger.warn(
+          `No token found for client ${client.id}. ` +
+            `Auth object: ${JSON.stringify(client.handshake.auth || {})}, ` +
+            `Has auth.token: ${!!client.handshake.auth?.token}`,
+        );
         this.rejectConnection(
           client,
           ERROR_MESSAGES.AUTHENTICATION_REQUIRED,
@@ -62,6 +77,8 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
         );
         return;
       }
+
+      this.logger.debug(`Token found for client ${client.id}, validating...`);
 
       // Validate JWT token
       const userInfo = await this.jwtAuthService.validateToken(token);
@@ -82,11 +99,21 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
         userUuid: userInfo.userUuid,
         message: 'Successfully authenticated',
       });
+
+      this.logger.debug(
+        `Client ${client.id} authenticated successfully as user ${userInfo.userId}`,
+      );
     } catch (error) {
       const errorMessage =
         error instanceof Error
           ? error.message
           : ERROR_MESSAGES.AUTHENTICATION_FAILED;
+
+      this.logger.error(
+        `Authentication failed for client ${client.id}: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
       this.rejectConnection(client, errorMessage, ERROR_CODES.AUTH_FAILED);
     }
   }

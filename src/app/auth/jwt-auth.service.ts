@@ -254,7 +254,15 @@ export class JwtAuthService {
     const headers = socket.handshake?.headers || {};
 
     // Check multiple header name variations (case-insensitive)
-    const authHeaderKeys = ['authorization', 'Authorization', 'AUTHORIZATION'];
+    // Some clients/proxies send "auth" instead of "authorization"
+    const authHeaderKeys = [
+      'authorization',
+      'Authorization',
+      'AUTHORIZATION',
+      'auth',
+      'Auth',
+      'AUTH',
+    ];
     for (const headerKey of authHeaderKeys) {
       const authHeader = headers[headerKey as keyof typeof headers];
       if (authHeader && typeof authHeader === 'string') {
@@ -272,6 +280,34 @@ export class JwtAuthService {
       }
     }
 
+    // Also check all headers for any token-like values (last resort)
+    // Some proxies/clients may send tokens in custom headers
+    for (const [headerKey, headerValue] of Object.entries(headers)) {
+      if (
+        headerValue &&
+        typeof headerValue === 'string' &&
+        headerValue.trim().length > 20 && // Tokens are usually long
+        !['host', 'user-agent', 'accept', 'connection'].includes(
+          headerKey.toLowerCase(),
+        )
+      ) {
+        let token = headerValue.trim();
+        // Remove Bearer prefix if present
+        if (token.startsWith('Bearer ') || token.startsWith('bearer ')) {
+          token = token.substring(7).trim();
+        }
+        // Basic JWT token validation (contains dots and is reasonably long)
+        if (
+          token.length > 20 &&
+          token.includes('.') &&
+          token.split('.').length === 3
+        ) {
+          this.logger.debug(`Token extracted from header.${headerKey}`);
+          return token;
+        }
+      }
+    }
+
     // Priority 3: Check query parameters (fallback)
     // Query params can be string or string array, handle both
     const query = socket.handshake?.query || {};
@@ -281,6 +317,7 @@ export class JwtAuthService {
       'accessToken',
       'jwt',
       'jwtToken',
+      't', // Some clients use abbreviated key
     ];
 
     for (const queryKey of queryTokenKeys) {
@@ -296,13 +333,24 @@ export class JwtAuthService {
       }
     }
 
-    // No token found
+    // No token found - enhanced debugging
+    const headerKeys = Object.keys(headers);
+    const queryKeys = Object.keys(query);
     this.logger.warn(
       `No authentication token found in socket handshake. Client: ${socket.id}, ` +
         `Auth keys: ${auth ? Object.keys(auth).join(', ') : 'none'}, ` +
-        `Header keys: ${Object.keys(headers).join(', ')}, ` +
-        `Query keys: ${Object.keys(query).join(', ')}`,
+        `Header keys: ${headerKeys.join(', ')}, ` +
+        `Query keys: ${queryKeys.join(', ')}`,
     );
+    // Debug: log first few chars of potentially token-containing values
+    if (headers.auth && typeof headers.auth === 'string') {
+      this.logger.debug(
+        `Header 'auth' contains: ${headers.auth.substring(0, 20)}...`,
+      );
+    }
+    if (query.t && typeof query.t === 'string') {
+      this.logger.debug(`Query 't' contains: ${query.t.substring(0, 20)}...`);
+    }
     return null;
   }
 }
