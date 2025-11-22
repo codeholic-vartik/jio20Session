@@ -22,6 +22,7 @@ import { handleSyncSales } from './handlers/sync-sales.handler';
 import { handleStartLive } from './handlers/start-live.handler';
 import { handleSyncOpeningSessions } from './handlers/sync-opening.handler';
 import { handleOrphanCoupons } from './handlers/orphan-coupon-checker';
+import { handleApplyCoupon } from './handlers/apply-coupon.handler';
 import {
   createStandaloneLogger,
   StandaloneLogger,
@@ -99,6 +100,8 @@ export const sessionWorker = new Worker(
         result = await handleSyncOpeningSessions(job);
       } else if (job.name === 'process-orphan-coupons') {
         result = await handleOrphanCoupons(job);
+      } else if (job.name === 'apply-coupon') {
+        result = await handleApplyCoupon(job);
       } else {
         // Default response for unknown job types
         result = { ok: true };
