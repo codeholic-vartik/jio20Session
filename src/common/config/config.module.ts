@@ -67,6 +67,69 @@ const envSchema = z.object({
     ),
   RAZORPAY_CLIENT: z.string().optional(),
   RAZORPAY_SECRET: z.string().optional(),
+  SESSION_ENCRYPTION_KEY: z
+    .string()
+    .optional()
+    .describe(
+      'SHA-256 hash (hex string) for encrypting coupon codes. Must be 64 hex characters.',
+    ),
+  COUPON_CODE_PREFIX: z.string().optional().default('SES'),
+  COUPON_RANDOM_SUFFIX_LENGTH: z
+    .string()
+    .optional()
+    .default('6')
+    .refine(
+      (value) =>
+        /^\d+$/.test(value) &&
+        Number.parseInt(value, 10) > 0 &&
+        Number.parseInt(value, 10) <= 20,
+      {
+        message:
+          'COUPON_RANDOM_SUFFIX_LENGTH must be a positive integer between 1 and 20',
+      },
+    ),
+  COUPON_SCUID_PREFIX: z.string().optional().default('sc'),
+  COUPON_SCUID_NANO_LENGTH: z
+    .string()
+    .optional()
+    .default('8')
+    .refine(
+      (value) =>
+        /^\d+$/.test(value) &&
+        Number.parseInt(value, 10) > 0 &&
+        Number.parseInt(value, 10) <= 20,
+      {
+        message:
+          'COUPON_SCUID_NANO_LENGTH must be a positive integer between 1 and 20',
+      },
+    ),
+  MAX_SESSION_COUPON_APPLY: z
+    .string()
+    .optional()
+    .refine(
+      (value) =>
+        !value ||
+        (/^\d+$/.test(value) &&
+          Number.parseInt(value, 10) > 0 &&
+          Number.parseInt(value, 10) <= 100),
+      {
+        message:
+          'MAX_SESSION_COUPON_APPLY must be a positive integer between 1 and 100',
+      },
+    )
+    .describe(
+      'Maximum number of times a user can win in a session. If set, users cannot apply more coupons after reaching this limit.',
+    ),
+  COUPON_INVALIDATE: z
+    .string()
+    .optional()
+    .refine((value) => !value || value === 'true' || value === 'false', {
+      message: 'COUPON_INVALIDATE must be "true" or "false"',
+    })
+    .default('false')
+    .describe(
+      'If true, invalidates all remaining coupons for a user in a session when they reach MAX_SESSION_COUPON_APPLY limit.',
+    ),
 });
 
 function validateEnv(config: Record<string, unknown>) {

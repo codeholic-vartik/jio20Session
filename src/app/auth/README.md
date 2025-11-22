@@ -97,9 +97,9 @@ handleProtectedEvent(@ConnectedSocket() client: AuthenticatedSocket) {
 
 ## Client Connection
 
-Clients must provide JWT token in one of these ways:
+Clients must provide JWT token in one of these ways (checked in priority order):
 
-1. **Recommended - Auth object (Socket.IO v4+):**
+### 1. **Recommended - Auth Object (Socket.IO v4+)**
 
 ```javascript
 const socket = io('/ws/v1/session/', {
@@ -109,7 +109,23 @@ const socket = io('/ws/v1/session/', {
 });
 ```
 
-2. **Authorization header:**
+**Example with AsyncStorage (React Native):**
+
+```javascript
+import { io } from 'socket.io-client';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const token = await AsyncStorage.getItem('access_token');
+
+const socket = io('https://your-api.com/ws/v1/session/', {
+  transports: ['websocket', 'polling'],
+  auth: {
+    token: token,
+  },
+});
+```
+
+### 2. **Authorization Header**
 
 ```javascript
 const socket = io('/ws/v1/session/', {
@@ -119,7 +135,7 @@ const socket = io('/ws/v1/session/', {
 });
 ```
 
-3. **Query parameter (less secure):**
+### 3. **Query Parameter (Fallback)**
 
 ```javascript
 const socket = io('/ws/v1/session/', {
@@ -128,6 +144,12 @@ const socket = io('/ws/v1/session/', {
   },
 });
 ```
+
+**Note:** The backend automatically checks all three methods in priority order:
+
+1. `auth.token` (Priority 1)
+2. `Authorization` header (Priority 2)
+3. Query parameter `token` (Priority 3)
 
 ## Events
 
