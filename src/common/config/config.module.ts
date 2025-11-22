@@ -103,6 +103,33 @@ const envSchema = z.object({
           'COUPON_SCUID_NANO_LENGTH must be a positive integer between 1 and 20',
       },
     ),
+  MAX_SESSION_COUPON_APPLY: z
+    .string()
+    .optional()
+    .refine(
+      (value) =>
+        !value ||
+        (/^\d+$/.test(value) &&
+          Number.parseInt(value, 10) > 0 &&
+          Number.parseInt(value, 10) <= 100),
+      {
+        message:
+          'MAX_SESSION_COUPON_APPLY must be a positive integer between 1 and 100',
+      },
+    )
+    .describe(
+      'Maximum number of times a user can win in a session. If set, users cannot apply more coupons after reaching this limit.',
+    ),
+  COUPON_INVALIDATE: z
+    .string()
+    .optional()
+    .refine((value) => !value || value === 'true' || value === 'false', {
+      message: 'COUPON_INVALIDATE must be "true" or "false"',
+    })
+    .default('false')
+    .describe(
+      'If true, invalidates all remaining coupons for a user in a session when they reach MAX_SESSION_COUPON_APPLY limit.',
+    ),
 });
 
 function validateEnv(config: Record<string, unknown>) {

@@ -16,6 +16,15 @@ import { SessionStatus } from '../../../../../common/types/enums/session-status.
 import IORedis from 'ioredis';
 import { normalizeRedisUrl } from '../../../../../common/utils/redis-url.util';
 import { resolveRedisDbIndex } from '../../../../../common/utils/redis-db.util';
+import {
+  validateCouponOwnership,
+  validateCouponIsValid,
+  validateCouponNotUsed,
+  validateUserWinCountPerSession,
+  validateSessionExists,
+  validateSessionIsOpen,
+  checkAndInvalidateRemainingCouponsAfterWin,
+} from '../../../../../app/coupon/utils/coupon-validator.util';
 
 const logger: StandaloneLogger = createStandaloneLogger('ApplyCouponHandler');
 
@@ -98,36 +107,19 @@ export async function handleApplyCoupon(job: Job): Promise<{
     throw new Error(`Coupon not found: ${couponId}`);
   }
 
-  // Validate coupon ownership
-  if (coupon.user_id !== userId) {
-    throw new Error(`User ${userId} does not own coupon ${couponId}`);
+  // Validate coupon ownership, validity, and usage
+  validateCouponOwnership(coupon, userId);
+  validateCouponIsValid(coupon);
+  validateCouponNotUsed(coupon);
+
+  // Validate user win count per session (if configured)
+  if (coupon.session_id) {
+    await validateUserWinCountPerSession(userId, coupon.session_id, prisma);
   }
 
-  if (!coupon.is_valid) {
-    throw new Error(`Coupon ${couponId} is not valid`);
-  }
-
-  if (coupon.is_redeemed) {
-    throw new Error(`Coupon ${couponId} has already been applied`);
-  }
-
-  // Load session
-  const session = await prisma.sessions.findUnique({
-    where: { id: sessionId },
-    include: {
-      session_profiles: true,
-    },
-  });
-
-  if (!session) {
-    throw new Error(`Session not found: ${sessionId}`);
-  }
-
-  if (session.status !== SessionStatus.LIVE.valueOf()) {
-    throw new Error(
-      `Session ${sessionId} is not LIVE (status: ${session.status})`,
-    );
-  }
+  // Load and validate session
+  const session = await validateSessionExists(sessionId, prisma);
+  validateSessionIsOpen(session);
 
   // Load profile
   const profile = await prisma.session_profiles.findUnique({
@@ -196,7 +188,7 @@ export async function handleApplyCoupon(job: Job): Promise<{
       applied_at: appliedAt,
       position,
       is_redeemed: true,
-      status: isWinner ? 'WINNER' : 'APPLIED_LATE',
+      status: isWinner ? 'winner' : 'applied_late',
     },
   });
 
@@ -252,6 +244,14 @@ export async function handleApplyCoupon(job: Job): Promise<{
     rewardCreated = true;
     logger.log(
       `Created reward: user_id=${userId}, session_id=${sessionId}, position=${position}`,
+    );
+
+    // Check if user has reached max wins and invalidate remaining coupons if configured
+    await checkAndInvalidateRemainingCouponsAfterWin(
+      userId,
+      sessionId,
+      prisma,
+      logger,
     );
   }
 

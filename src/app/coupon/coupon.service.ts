@@ -13,6 +13,15 @@ import IORedis from 'ioredis';
 import { normalizeRedisUrl } from '../../common/utils/redis-url.util';
 import { resolveRedisDbIndex } from '../../common/utils/redis-db.util';
 import { Queue } from 'bullmq';
+import {
+  validateCouponOwnership,
+  validateCouponIsValid,
+  validateCouponNotUsed,
+  validateUserWinCountPerSession,
+  validateSessionExists,
+  validateSessionIsOpen,
+  checkAndInvalidateRemainingCouponsAfterWin,
+} from './utils/coupon-validator.util';
 
 /**
  * Apply coupon to session competition.
@@ -98,9 +107,9 @@ export class CouponService {
     }
 
     // Step 2: Quick validation checks (no locks, fast)
-    this.validateCouponOwnership(coupon, userId);
-    this.validateCouponIsValid(coupon);
-    this.validateCouponNotUsed(coupon);
+    validateCouponOwnership(coupon, userId);
+    validateCouponIsValid(coupon);
+    validateCouponNotUsed(coupon);
 
     if (!coupon.session_id) {
       throw new BadRequestException({
@@ -111,6 +120,13 @@ export class CouponService {
         ctx: { session_id: null },
       });
     }
+
+    // Step 2.5: Validate user win count per session (if configured)
+    await validateUserWinCountPerSession(
+      userId,
+      coupon.session_id,
+      this.prisma,
+    );
 
     // Step 3: Add to queue with request timestamp for FIFO processing
     // Jobs are processed in order based on request timestamp
@@ -191,12 +207,15 @@ export class CouponService {
     }
 
     // Re-validate (might have changed since queued)
-    this.validateCouponOwnership(coupon, userId);
-    this.validateCouponIsValid(coupon);
-    this.validateCouponNotUsed(coupon);
+    validateCouponOwnership(coupon, userId);
+    validateCouponIsValid(coupon);
+    validateCouponNotUsed(coupon);
 
-    const session = await this.validateSessionExists(sessionId);
-    this.validateSessionIsOpen(session);
+    const session = await validateSessionExists(sessionId, this.prisma);
+    validateSessionIsOpen(session);
+
+    // Validate user win count per session (before applying)
+    await validateUserWinCountPerSession(userId, sessionId, this.prisma);
 
     // Process with Redis atomic operations only (no DB locks)
     const result = await this.applyCouponWithRedisAtomic(coupon, session);
@@ -272,89 +291,6 @@ export class CouponService {
   }
 
   /**
-   * Validate coupon ownership
-   */
-  private validateCouponOwnership(coupon: { user_id: number }, userId: number) {
-    if (coupon.user_id !== userId) {
-      throw new BadRequestException({
-        error_type: 'unauthorized',
-        loc: 'coupon',
-        msg: 'You do not own this coupon',
-        inp: '***',
-        ctx: { code: 'ownership' },
-      });
-    }
-  }
-
-  /**
-   * Validate coupon is valid
-   */
-  private validateCouponIsValid(coupon: { is_valid: boolean }) {
-    if (!coupon.is_valid) {
-      throw new BadRequestException({
-        error_type: 'invalid_coupon',
-        loc: 'coupon',
-        msg: 'This coupon is not valid',
-        inp: '***',
-        ctx: { code: 'invalid' },
-      });
-    }
-  }
-
-  /**
-   * Validate coupon not already used
-   */
-  private validateCouponNotUsed(coupon: { is_redeemed: boolean }) {
-    if (coupon.is_redeemed) {
-      throw new ConflictException({
-        error_type: 'duplicate_application',
-        loc: 'coupon',
-        msg: 'This coupon has already been applied',
-        inp: '***',
-        ctx: { code: 'already_used' },
-      });
-    }
-  }
-
-  /**
-   * Validate session exists
-   */
-  private async validateSessionExists(sessionId: number) {
-    const session = await this.prisma.sessions.findUnique({
-      where: { id: sessionId },
-      include: {
-        session_profiles: true,
-      },
-    });
-
-    if (!session) {
-      throw new NotFoundException({
-        error_type: 'not_found',
-        loc: 'session',
-        msg: 'Session not found',
-        inp: sessionId.toString(),
-      });
-    }
-
-    return session;
-  }
-
-  /**
-   * Validate session is open for applications
-   */
-  private validateSessionIsOpen(session: { status: string }) {
-    if (session.status !== SessionStatus.LIVE.valueOf()) {
-      throw new BadRequestException({
-        error_type: 'session_closed',
-        loc: 'session',
-        msg: 'Session is not open for coupon applications',
-        inp: session.status,
-        ctx: { status: session.status },
-      });
-    }
-  }
-
-  /**
    * Validate session has available slots
    */
   private async validateSessionHasAvailableSlots(session: {
@@ -377,7 +313,7 @@ export class CouponService {
       throw new ConflictException({
         error_type: 'session_full',
         loc: 'session',
-        msg: `Session has reached maximum slots (${maxSlots}). No more coupons can be applied.`,
+        msg: `Session has reached maximum slots limit. No more coupons can be applied.`,
         inp: session.id.toString(),
         ctx: {
           max_slots: maxSlots,
@@ -446,7 +382,7 @@ export class CouponService {
       throw new ConflictException({
         error_type: 'session_full',
         loc: 'session',
-        msg: `Session has reached maximum slots (${maxSlots}). No more coupons can be applied.`,
+        msg: `Session has reached maximum slots limit. No more coupons can be applied.`,
         inp: session.suid,
         ctx: {
           max_slots: maxSlots,
@@ -542,6 +478,14 @@ export class CouponService {
       rewardCreated = true;
       this.logger.log(
         `Created reward record for winner: user_id=${coupon.user_id}, session_id=${session.id}, position=${position}, reward_type=${profile.reward_type}`,
+      );
+
+      // Check if user has reached max wins and invalidate remaining coupons if configured
+      await checkAndInvalidateRemainingCouponsAfterWin(
+        coupon.user_id,
+        session.id,
+        this.prisma,
+        this.logger,
       );
     }
 

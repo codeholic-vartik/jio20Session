@@ -1065,7 +1065,7 @@ const updateResult = await prisma.session_coupons.updateMany({
     applied_at: appliedAt,
     position,
     is_redeemed: true,
-    status: isWinner ? 'WINNER' : 'APPLIED_LATE',
+    status: isWinner ? 'winner' : 'applied_late',
   },
 });
 
@@ -1412,59 +1412,6 @@ COUPON_CODE_PREFIX=SES              # Default: SES
 COUPON_RANDOM_SUFFIX_LENGTH=6       # Default: 6
 COUPON_SCUID_PREFIX=sc              # Default: sc
 COUPON_SCUID_NANO_LENGTH=8          # Default: 8
-```
-
-### Database Schema
-
-**session_coupons table:**
-
-```prisma
-model session_coupons {
-  id            Int       @id @default(autoincrement())
-  scuid         String    @unique
-  user_id       Int
-  session_id    Int?
-  code          String    // Encrypted coupon code
-  is_valid      Boolean   @default(true)
-  is_redeemed   Boolean   @default(false)
-  applied_at    DateTime?
-  position      Int?
-  status        String?   // WINNER, APPLIED_LATE
-  created_at    DateTime  @default(now())
-  updated_at    DateTime  @updatedAt
-}
-```
-
-**sessions table:**
-
-```prisma
-model sessions {
-  id                        Int       @id @default(autoincrement())
-  suid                      String    @unique
-  session_profile_id        Int
-  status                    String
-  current_participant_count Int?
-  is_active                 Boolean   @default(true)
-  start_time                DateTime?
-  end_time                  DateTime?
-  created_at                DateTime  @default(now())
-  updated_at                DateTime  @updatedAt
-}
-```
-
-**session_profiles table:**
-
-```prisma
-model session_profiles {
-  id              Int       @id @default(autoincrement())
-  max_slots       Int       @default(0)  // 0 = unlimited
-  reward_type     String
-  reward_value    Decimal?
-  reward_currency String?
-  reward_product_id Int?
-  reward_coupon_id Int?
-  reward_metadata Json?
-}
 ```
 
 ---
