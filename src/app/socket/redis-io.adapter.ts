@@ -161,9 +161,10 @@ export class RedisIoAdapter extends IoAdapter {
 
   createIOServer(port: number, options?: ServerOptions): Server {
     // Optimized Socket.IO options for high concurrency (100k+ users)
+    // For race games: prefer websocket for low latency, fallback to polling for compatibility
     const opts: ServerOptions = {
       cors: { origin: true, credentials: true },
-      transports: ['polling', 'websocket'],
+      transports: ['websocket', 'polling'], // WebSocket first for low latency, polling as fallback
       // Connection timeout: 45 seconds (increase for slow networks)
       connectTimeout: 45000,
       // Ping interval: 25 seconds (balance between detection and overhead)
