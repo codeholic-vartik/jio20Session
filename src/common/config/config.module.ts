@@ -42,7 +42,6 @@ const envSchema = z.object({
     .default('info'),
   LOG_DIR: z.string().optional().default('logs'),
   LOG_RETENTION_DAYS: z.string().optional().default('30'),
-  WEBSOCKET_NAMESPACE: z.string().optional().default('/ws/v1/session/'),
   JWT_SECRET_KEY: z
     .string()
     .optional()

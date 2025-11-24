@@ -68,14 +68,13 @@ async function bootstrap() {
     process.env.NODE_ENV === 'production' || process.env.HTTPS === 'true';
   const wsProtocol = isHttps ? 'wss' : 'ws';
   const host = process.env.HOST || process.env.WEBSOCKET_HOST || 'localhost';
-  const wsNamespace = process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
   // When behind reverse proxy, don't include port in URL (use standard ports)
   const includePort = process.env.WEBSOCKET_INCLUDE_PORT !== 'false';
   const standardPort = isHttps ? 443 : 80;
   const wsUrl =
     port === standardPort || !includePort
-      ? `${wsProtocol}://${host}${wsNamespace}`
-      : `${wsProtocol}://${host}:${port}${wsNamespace}`;
+      ? `${wsProtocol}://${host}`
+      : `${wsProtocol}://${host}:${port}`;
 
   /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
   const asyncApiOptions = (new AsyncApiDocumentBuilder() as any)
