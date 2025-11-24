@@ -49,7 +49,6 @@ export function registerWsDocsUi(app: NestFastifyApplication): void {
       req.headers.host ||
       'localhost:9000';
     const origin = `${proto}://${host}`;
-    const wsNamespace = process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
     const html = `<!doctype html>
 <html>
   <head>
@@ -82,15 +81,9 @@ export function registerWsDocsUi(app: NestFastifyApplication): void {
         <div class="card">
           <label>Server URL</label>
           <input id="url" value="${origin}" />
-          <div class="row">
-            <div>
-              <label>Namespace</label>
-              <input id="ns" value="${wsNamespace}" />
-            </div>
-            <div>
-              <label>Auth (JSON)</label>
-              <input id="auth" placeholder='{"token":"..."}' />
-            </div>
+          <div>
+            <label>Auth (JSON)</label>
+            <input id="auth" placeholder='{"token":"..."}' />
           </div>
           <div class="row" style="margin-top:10px">
             <button id="connect" class="btn">Connect</button>
@@ -156,11 +149,10 @@ export function registerWsDocsUi(app: NestFastifyApplication): void {
         const urlEl = document.getElementById('url');
         let base = urlEl.value;
         if (typeof base === 'string' and base.endsWith('/')) base = base.slice(0, -1);
-        const ns = document.getElementById('ns').value || '${wsNamespace}';
         let auth = {};
         try { auth = JSON.parse(document.getElementById('auth').value || '{}'); } catch {}
         if (socket and socket.connected) socket.disconnect();
-        socket = io(base + ns, { transports: ['websocket','polling'], auth });
+        socket = io(base, { transports: ['websocket','polling'], auth });
         socket.on('connect', () => log('connected', { id: socket.id }));
         socket.on('disconnect', (reason) => log('disconnected', { reason }));
         socket.onAny((event, ...args) => log('event: ' + event, args.length === 1 ? args[0] : args));

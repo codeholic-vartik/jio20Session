@@ -31,10 +31,7 @@ import {
 import { SalesUpdatePayload } from '../jobs/redis-subscriber.service';
 import { calculateSalesPercentages } from './utils/sales-percentage.util';
 
-const WEBSOCKET_NAMESPACE =
-  process.env.WEBSOCKET_NAMESPACE || '/ws/v1/session/';
 @WebSocketGateway({
-  namespace: WEBSOCKET_NAMESPACE,
   cors: { origin: true, credentials: true },
 })
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
@@ -55,7 +52,6 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.debug(
         `Connection attempt from client ${client.id}. ` +
           `URL: ${client.handshake.url}, ` +
-          `Namespace: ${client.nsp.name}, ` +
           `Auth keys: ${client.handshake.auth ? Object.keys(client.handshake.auth).join(', ') : 'none'}, ` +
           `Header keys: ${Object.keys(client.handshake.headers || {}).join(', ')}`,
       );
