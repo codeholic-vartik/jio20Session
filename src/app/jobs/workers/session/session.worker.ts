@@ -11,7 +11,7 @@
  * The worker automatically starts when this module is imported (via bullmq.module.ts)
  */
 
-import { Worker } from 'bullmq';
+import { Worker, Queue } from 'bullmq';
 import {
   createRedisConnection,
   createSalesSyncRedisConnection,
@@ -23,6 +23,8 @@ import { handleStartLive } from './handlers/start-live.handler';
 import { handleSyncOpeningSessions } from './handlers/sync-opening.handler';
 import { handleOrphanCoupons } from './handlers/orphan-coupon-checker';
 import { handleApplyCoupon } from './handlers/apply-coupon.handler';
+import { defaultJobOptions } from './config/job-options.config';
+import { handleExpireSessionCoupons } from './handlers/expire-session-coupons.handler';
 import {
   createStandaloneLogger,
   StandaloneLogger,
@@ -32,7 +34,44 @@ import {
 const connection = createRedisConnection();
 // Create separate Redis connection for sales sync (uses REDIS_DB, not REDIS_BULLMQ_DB)
 const salesSyncConnection = createSalesSyncRedisConnection();
+// Queue connection for dispatching follow-up jobs (separate from worker connection)
+const queueConnection = createRedisConnection();
+const sessionJobQueue = new Queue('session-jobs', {
+  connection: queueConnection,
+});
 const logger: StandaloneLogger = createStandaloneLogger('SessionWorker');
+
+async function enqueueExpireSessionCouponsJob(payload: {
+  sessionId: number;
+  sessionProfileId: number;
+}) {
+  try {
+    await sessionJobQueue.add(
+      'expire-session-coupons',
+      {
+        sessionId: payload.sessionId,
+        sessionProfileId: payload.sessionProfileId,
+        triggeredAt: new Date().toISOString(),
+        reason: 'max_slots_reached',
+      },
+      {
+        ...defaultJobOptions,
+        jobId: `expire-session-${payload.sessionId}`,
+        removeOnComplete: { age: 3600, count: 50 },
+        removeOnFail: { age: 86400 },
+      },
+    );
+    logger.log(
+      `Queued expire-session-coupons job from worker for session_id=${payload.sessionId}`,
+    );
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error(
+      `Failed to enqueue expire-session-coupons job for session ${payload.sessionId}: ${errorMessage}`,
+      error instanceof Error ? error.stack : undefined,
+    );
+  }
+}
 
 // Log worker initialization
 logger.info('Session worker module loaded - initializing worker...');
@@ -71,6 +110,7 @@ logger.info('Session worker module loaded - initializing worker...');
  * - 'start-live': Routes to handleStartLive (transitions OPENING to LIVE at exact time)
  * - 'sync-opening-sessions': Routes to handleSyncOpeningSessions
  * - 'process-orphan-coupons': Routes to handleOrphanCoupons
+ * - 'expire-session-coupons': Routes to handleExpireSessionCoupons
  * - Unknown types: Returns { ok: true }
  */
 // Initialize worker immediately
@@ -102,9 +142,25 @@ export const sessionWorker = new Worker(
         result = await handleOrphanCoupons(job);
       } else if (job.name === 'apply-coupon') {
         result = await handleApplyCoupon(job);
+      } else if (job.name === 'expire-session-coupons') {
+        result = await handleExpireSessionCoupons(job);
       } else {
         // Default response for unknown job types
         result = { ok: true };
+      }
+
+      if (job.name === 'apply-coupon') {
+        const expirePayload = (
+          result as {
+            expire_job_payload?: {
+              sessionId: number;
+              sessionProfileId: number;
+            };
+          }
+        ).expire_job_payload;
+        if (expirePayload) {
+          await enqueueExpireSessionCouponsJob(expirePayload);
+        }
       }
 
       logger.info(
@@ -207,6 +263,9 @@ sessionWorker.on('stalled', (jobId) => {
 
 sessionWorker.on('closing', () => {
   logger.info('Session worker is closing');
+  void sessionJobQueue.close().catch(() => {
+    // Ignore errors during shutdown
+  });
 });
 
 /**

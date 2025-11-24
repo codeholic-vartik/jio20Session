@@ -60,6 +60,27 @@ The worker processes the following job types:
   3. Updates `current_sales_count` if Redis value is higher
   4. Processes in batches for performance
 
+### 4. `expire-session-coupons`
+
+- **Purpose**: Marks remaining coupons as expired once a session finishes consuming all available slots (i.e., participant count reaches `max_slots` and the session is marked `COMPLETED`)
+- **Handler**: `handlers/expire-session-coupons.handler.ts`
+- **Job Data**:
+  ```typescript
+  {
+    sessionId: number;
+    sessionProfileId: number;
+    salesCount?: number;
+    reason?: 'threshold_reached' | 'sales_update' | string;
+  }
+  ```
+- **Process**:
+  1. Validates session/profile relationship and ensures session status is `COMPLETED`
+  2. Processes coupons in configurable batches (default 500)
+  3. Updates `status='expired'` and `is_valid=false` for remaining coupons
+  4. Stops automatically when no pending coupons remain
+  5. Batch size can be overridden via `SESSION_COUPON_EXPIRE_BATCH_SIZE` env variable
+- **Trigger**: Automatically enqueued when the last slot is claimed (inside `apply-coupon` worker result)
+
 ## 🔧 Configuration
 
 ### Redis Connection
