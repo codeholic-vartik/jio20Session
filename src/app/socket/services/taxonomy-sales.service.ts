@@ -198,7 +198,7 @@ export class TaxonomySalesService {
         suid: s.suid,
         title: s.name ?? '',
         description: '',
-        status: s.status,
+        status: s.status as SessionStatus,
         current_sales_count: s.current_sales_count,
         current_participant_count: s.current_participant_count,
       })),
