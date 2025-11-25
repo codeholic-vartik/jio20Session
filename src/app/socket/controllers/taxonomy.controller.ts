@@ -61,7 +61,6 @@ export class SocketTaxonomyController {
       calculateSalesPercentages(snapshot.sales_count, maxSales);
 
     const shouldIncludePercentages = sessionStatus === SessionStatus.UPCOMING;
-
     const updatedAt = new Date().toISOString();
 
     const sanitizedSnapshot: PublicTaxonomySalesSnapshot = {
@@ -74,7 +73,7 @@ export class SocketTaxonomyController {
     const payload: TaxonomySalesJoinedPayload = {
       ...sanitizedSnapshot,
       // Compact format fields matching broadcastSalesCountUpdate response
-      ss: sessionStatus || undefined,
+      ss: sessionStatus ?? undefined,
       psr: shouldIncludePercentages ? percentageSaleReached : null,
       psl: shouldIncludePercentages ? percentageSaleLeft : null,
       sales_count: snapshot.sales_count, // Explicit for consistency
