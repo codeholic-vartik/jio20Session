@@ -56,7 +56,7 @@ export interface SalesUpdatePayload {
   sales_trigger_count?: number;
   max_slots?: number;
   max_sessions?: number;
-  session_status?: keyof typeof SessionStatus;
+  session_status?: SessionStatus | keyof typeof SessionStatus;
 }
 
 /**

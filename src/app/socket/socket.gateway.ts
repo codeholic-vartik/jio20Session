@@ -30,6 +30,7 @@ import {
 } from './constants';
 import { SalesUpdatePayload } from '../jobs/redis-subscriber.service';
 import { calculateSalesPercentages } from './utils/sales-percentage.util';
+import { SessionStatus } from '../../common/types/enums';
 
 @WebSocketGateway({
   cors: { origin: true, credentials: true },
@@ -308,10 +309,13 @@ export class SocketGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const { percentageSaleReached, percentageSaleLeft } =
       calculateSalesPercentages(data.count, maxSales);
 
+    const shouldIncludePercentages =
+      data.session_status === SessionStatus.UPCOMING;
+
     const payload = {
       ss: data.session_status,
-      psr: percentageSaleReached,
-      psl: percentageSaleLeft,
+      psr: shouldIncludePercentages ? percentageSaleReached : null,
+      psl: shouldIncludePercentages ? percentageSaleLeft : null,
       sales_count: data.count,
       ca: new Date().toISOString(),
     };

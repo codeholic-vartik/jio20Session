@@ -23,7 +23,7 @@ export interface TaxonomySalesSnapshot {
     suid: string;
     title: string;
     description: string;
-    status: string;
+    status: SessionStatus;
     current_sales_count: number;
     current_participant_count: number;
   }>;
