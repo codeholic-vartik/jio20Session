@@ -1,4 +1,5 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../../common/database/database.service';
 import { generateUid } from '../../common/utils/uuid.util';
 import { generateSessionName } from '../../common/utils/session.util';
@@ -10,12 +11,32 @@ import { scheduleStartLiveJob } from '../jobs/workers/session-transition.helper'
 @Injectable()
 export class SessionService {
   private readonly logger = new Logger(SessionService.name);
+  private readonly stopTriggerType: string | null;
+  private readonly stopTriggerValue: number | null;
 
   constructor(
     private readonly prisma: DatabaseService,
     @Inject('BULLMQ_CONNECTION') private readonly redis: IORedis,
     @Inject('SESSION_QUEUE') private readonly sessionQueue: Queue,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    this.stopTriggerType =
+      this.configService.get<string>('SESSION_STOP_TRIGGER_TYPE') ?? null;
+
+    const stopTriggerValue = this.configService.get<string>(
+      'SESSION_STOP_TRIGGER_VALUE',
+    );
+
+    if (
+      typeof stopTriggerValue === 'string' &&
+      stopTriggerValue.trim().length > 0
+    ) {
+      const parsedValue = Number.parseInt(stopTriggerValue, 10);
+      this.stopTriggerValue = Number.isNaN(parsedValue) ? null : parsedValue;
+    } else {
+      this.stopTriggerValue = null;
+    }
+  }
 
   async getActiveSessions() {
     return this.prisma.sessions.findMany({
@@ -132,12 +153,16 @@ export class SessionService {
             start_time: currentTime, // JavaScript Date is UTC internally, stored as UTC in Timestamptz
             start_trigger_type: sessionProfile.session_duration_unit,
             start_trigger_value: sessionProfile.session_duration_value,
+            stop_trigger_type: this.stopTriggerType,
+            stop_trigger_value: this.stopTriggerValue,
           },
           select: {
             id: true,
             start_time: true,
             start_trigger_type: true,
             start_trigger_value: true,
+            stop_trigger_type: true,
+            stop_trigger_value: true,
           },
         });
 

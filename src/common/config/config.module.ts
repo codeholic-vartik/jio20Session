@@ -72,6 +72,22 @@ const envSchema = z.object({
     .describe(
       'SHA-256 hash (hex string) for encrypting coupon codes. Must be 64 hex characters.',
     ),
+  SESSION_STOP_TRIGGER_TYPE: z.string().optional(),
+  SESSION_STOP_TRIGGER_VALUE: z
+    .string()
+    .optional()
+    .refine(
+      (value) => {
+        if (!value) {
+          return true;
+        }
+
+        return /^\d+$/.test(value) && Number.parseInt(value, 10) >= 0;
+      },
+      {
+        message: 'SESSION_STOP_TRIGGER_VALUE must be a non-negative integer',
+      },
+    ),
   COUPON_CODE_PREFIX: z.string().optional().default('SES'),
   COUPON_RANDOM_SUFFIX_LENGTH: z
     .string()
