@@ -645,6 +645,24 @@ export async function syncOpeningSessionsToLive(prisma: PrismaClient): Promise<{
     return { checked, transitioned, skipped, errors };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Handle database connection errors gracefully
+    // Check for PrismaClientInitializationError by name or error message pattern
+    const isDatabaseConnectionError =
+      error instanceof Error &&
+      (error.constructor.name === 'PrismaClientInitializationError' ||
+        errorMessage.includes("Can't reach database server") ||
+        errorMessage.includes('P1001') ||
+        errorMessage.includes('connection'));
+
+    if (isDatabaseConnectionError) {
+      logger.warn(
+        `Database connection unavailable, skipping sync: ${errorMessage}. Please ensure the database server is running.`,
+      );
+      // Return empty result instead of throwing to prevent job failure
+      return { checked: 0, transitioned: 0, skipped: 0, errors: 1 };
+    }
+
     logger.error(
       `Failed to sync opening sessions: ${errorMessage}`,
       error instanceof Error ? error.stack : undefined,

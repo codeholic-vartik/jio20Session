@@ -73,6 +73,11 @@ function getRedis(): IORedis | null {
  * @param {Job} job - BullMQ job instance with coupon application data
  * @returns {Promise<Object>} Result object with application details
  */
+type ExpireJobPayload = {
+  sessionId: number;
+  sessionProfileId: number;
+};
+
 export async function handleApplyCoupon(job: Job): Promise<{
   success: boolean;
   position: number;
@@ -82,6 +87,7 @@ export async function handleApplyCoupon(job: Job): Promise<{
   slots_remaining: number | null;
   reward_created: boolean;
   participant_count: number;
+  expire_job_payload?: ExpireJobPayload;
 }> {
   const { userId, couponId, sessionId, requestTimestamp } = job.data as {
     userId: number;
@@ -255,6 +261,8 @@ export async function handleApplyCoupon(job: Job): Promise<{
     );
   }
 
+  let expireJobPayload: ExpireJobPayload | undefined;
+
   // Update session
   const newParticipantCount = (session.current_participant_count || 0) + 1;
   await prisma.sessions.update({
@@ -275,6 +283,10 @@ export async function handleApplyCoupon(job: Job): Promise<{
     logger.log(
       `Session ${sessionId} reached max_slots (${maxSlots}) at position ${position}`,
     );
+    expireJobPayload = {
+      sessionId,
+      sessionProfileId: session.session_profile_id,
+    };
   }
 
   // Publish participant update
@@ -306,6 +318,11 @@ export async function handleApplyCoupon(job: Job): Promise<{
     slots_remaining: maxSlots > 0 ? Math.max(0, maxSlots - position) : null,
     reward_created: rewardCreated,
     participant_count: newParticipantCount,
+    ...(expireJobPayload
+      ? {
+          expire_job_payload: expireJobPayload,
+        }
+      : {}),
   };
 }
 
