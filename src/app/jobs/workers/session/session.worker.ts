@@ -7,6 +7,8 @@
  * - threshold-reached: Create new session when threshold is reached
  * - sync-sales: Sync sales counts from Redis to database
  * - start-live: Transition OPENING to LIVE at exact time (start_time + duration)
+ * - stop-session: Stop/complete a LIVE session
+ * - schedule-stop-sessions: Find all LIVE sessions and schedule stop jobs based on trigger values
  *
  * The worker automatically starts when this module is imported (via bullmq.module.ts)
  */
@@ -25,6 +27,8 @@ import { handleOrphanCoupons } from './handlers/orphan-coupon-checker';
 import { handleApplyCoupon } from './handlers/apply-coupon.handler';
 import { defaultJobOptions } from './config/job-options.config';
 import { handleExpireSessionCoupons } from './handlers/expire-session-coupons.handler';
+import { handleStopSession } from './handlers/stop-session.handler';
+import { handleScheduleStopSessions } from './handlers/schedule-stop-sessions.handler';
 import {
   createStandaloneLogger,
   StandaloneLogger,
@@ -111,6 +115,8 @@ logger.info('Session worker module loaded - initializing worker...');
  * - 'sync-opening-sessions': Routes to handleSyncOpeningSessions
  * - 'process-orphan-coupons': Routes to handleOrphanCoupons
  * - 'expire-session-coupons': Routes to handleExpireSessionCoupons
+ * - 'stop-session': Routes to handleStopSession (stops/completes a LIVE session)
+ * - 'schedule-stop-sessions': Routes to handleScheduleStopSessions (finds all LIVE sessions and schedules stop jobs)
  * - Unknown types: Returns { ok: true }
  */
 // Initialize worker immediately
@@ -144,6 +150,10 @@ export const sessionWorker = new Worker(
         result = await handleApplyCoupon(job);
       } else if (job.name === 'expire-session-coupons') {
         result = await handleExpireSessionCoupons(job);
+      } else if (job.name === 'stop-session') {
+        result = await handleStopSession(job);
+      } else if (job.name === 'schedule-stop-sessions') {
+        result = await handleScheduleStopSessions();
       } else {
         // Default response for unknown job types
         result = { ok: true };
