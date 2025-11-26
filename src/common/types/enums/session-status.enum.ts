@@ -7,5 +7,6 @@ export enum SessionStatus {
   OPENING = 'opening',
   LIVE = 'live',
   COMPLETED = 'completed',
+  TIME_REACHED = 'time_reached',
   CANCELLED = 'cancelled',
 }
