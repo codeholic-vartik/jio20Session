@@ -38,6 +38,22 @@ const envSchema = z.object({
     ),
   SENTRY_DSN: z.string().optional(),
   SENTRY_RELEASE: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z
+    .string()
+    .optional()
+    .refine(
+      (value) => {
+        if (!value) return true;
+        const num = parseFloat(value);
+        return !isNaN(num) && num >= 0 && num <= 1;
+      },
+      {
+        message: 'SENTRY_TRACES_SAMPLE_RATE must be a number between 0 and 1',
+      },
+    )
+    .describe(
+      'Sentry traces sample rate (0.0 to 1.0). Controls percentage of transactions sent to Sentry. Default: 0.1 (10%) in production, 1.0 (100%) in development.',
+    ),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
