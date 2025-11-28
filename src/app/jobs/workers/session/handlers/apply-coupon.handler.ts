@@ -22,7 +22,6 @@ import {
   validateCouponNotUsed,
   validateUserWinCountPerSession,
   validateSessionExists,
-  validateSessionIsOpen,
   checkAndInvalidateRemainingCouponsAfterWin,
 } from '../../../../../app/coupon/utils/coupon-validator.util';
 import { setSessionRedisTTL } from '../utils/session-redis-ttl.util';
@@ -79,6 +78,21 @@ type ExpireJobPayload = {
   sessionProfileId: number;
 };
 
+/**
+ * Custom error class for non-retryable errors (session closed, coupon not found, etc.)
+ * Jobs failing with this error should not be retried as they represent permanent failures
+ */
+export class NonRetryableError extends Error {
+  constructor(
+    message: string,
+    public readonly errorCode: string,
+    public readonly context?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'NonRetryableError';
+  }
+}
+
 export async function handleApplyCoupon(job: Job): Promise<{
   success: boolean;
   position: number;
@@ -105,13 +119,42 @@ export async function handleApplyCoupon(job: Job): Promise<{
   // Initialize services (we can't use DI in worker, so create instances)
   const prisma = new DatabaseService();
 
+  // OPTIMIZATION: Check session status FIRST before expensive operations
+  // This prevents wasting time on coupon validations if session is already closed
+  const session = await validateSessionExists(sessionId, prisma);
+
+  // Log session status for debugging
+  logger.log(
+    `Session loaded: session_id=${sessionId}, status=${session.status}, is_active=${session.is_active}, expected=LIVE`,
+  );
+
+  // Check session status early - if closed, fail immediately without retries
+  if (session.status !== SessionStatus.LIVE.valueOf()) {
+    const errorMessage = `Session ${sessionId} is not LIVE (status: ${session.status}). Cannot apply coupon.`;
+    logger.warn(
+      `Session closed - skipping coupon application: session_id=${sessionId}, status=${session.status}, user_id=${userId}, coupon_id=${couponId}`,
+    );
+    // Throw non-retryable error - session closure is permanent, no point retrying
+    throw new NonRetryableError(errorMessage, 'SESSION_CLOSED', {
+      sessionId,
+      sessionStatus: session.status,
+      userId,
+      couponId,
+    });
+  }
+
   // Load coupon
   const coupon = await prisma.session_coupons.findUnique({
     where: { id: couponId },
   });
 
   if (!coupon) {
-    throw new Error(`Coupon not found: ${couponId}`);
+    // Non-retryable - coupon doesn't exist
+    throw new NonRetryableError(
+      `Coupon not found: ${couponId}`,
+      'COUPON_NOT_FOUND',
+      { couponId, userId, sessionId },
+    );
   }
 
   // Validate coupon ownership, validity, and usage
@@ -123,10 +166,6 @@ export async function handleApplyCoupon(job: Job): Promise<{
   if (coupon.session_id) {
     await validateUserWinCountPerSession(userId, coupon.session_id, prisma);
   }
-
-  // Load and validate session
-  const session = await validateSessionExists(sessionId, prisma);
-  validateSessionIsOpen(session);
 
   // Load profile
   const profile = await prisma.session_profiles.findUnique({

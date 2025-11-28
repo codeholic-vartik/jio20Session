@@ -244,9 +244,12 @@ export function validateSessionIsOpen(session: { status: string }): void {
     throw new BadRequestException({
       error_type: 'session_closed',
       loc: 'session',
-      msg: 'Session is not open for coupon applications',
+      msg: `Session is not open for coupon applications. Current status: ${session.status}, required: ${SessionStatus.LIVE.valueOf()}`,
       inp: session.status,
-      ctx: { status: session.status },
+      ctx: {
+        status: session.status,
+        required_status: SessionStatus.LIVE.valueOf(),
+      },
     });
   }
 }

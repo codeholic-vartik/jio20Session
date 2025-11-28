@@ -129,6 +129,65 @@ export class CouponService {
       this.prisma,
     );
 
+    // Step 2.6: Quick session status check before queuing (optimization)
+    // Fail fast if session is already closed - no point queuing the job
+    // This prevents unnecessary job queueing and provides immediate feedback to user
+    if (coupon.session_id) {
+      const session = await this.prisma.sessions.findUnique({
+        where: { id: coupon.session_id },
+        select: { id: true, status: true, is_active: true, name: true },
+      });
+
+      if (!session) {
+        throw new NotFoundException({
+          error_type: 'not_found',
+          loc: 'session',
+          msg: 'Session not found',
+          inp: coupon.session_id.toString(),
+        });
+      }
+
+      // Check if session is LIVE before allowing coupon application
+      if (session.status !== SessionStatus.LIVE.valueOf()) {
+        const statusMessages: Record<string, string> = {
+          [SessionStatus.COMPLETED.valueOf()]: 'The session has been completed',
+          [SessionStatus.CANCELLED.valueOf()]: 'The session has been cancelled',
+          [SessionStatus.TIME_REACHED.valueOf()]:
+            'The session time has been reached',
+          [SessionStatus.UPCOMING.valueOf()]: 'The session has not started yet',
+          [SessionStatus.OPENING.valueOf()]: 'The session is still opening',
+        };
+
+        const statusMessage =
+          statusMessages[session.status] || 'The session is not currently live';
+
+        throw new BadRequestException({
+          error_type: 'session_closed',
+          loc: 'session',
+          msg: `Cannot apply coupon. Current session is not live. ${statusMessage}.`,
+          inp: session.status,
+          ctx: {
+            status: session.status,
+            required_status: SessionStatus.LIVE.valueOf(),
+          },
+        });
+      }
+
+      // Also check is_active flag as an additional safeguard
+      if (!session.is_active) {
+        throw new BadRequestException({
+          error_type: 'session_closed',
+          loc: 'session',
+          msg: 'Cannot apply coupon. The session is not active.',
+          inp: session.status,
+          ctx: {
+            status: session.status,
+            required_status: SessionStatus.LIVE.valueOf(),
+          },
+        });
+      }
+    }
+
     // Step 3: Add to queue with request timestamp for FIFO processing
     // Jobs are processed in order based on request timestamp
     const requestTimestamp = Date.now();
@@ -190,10 +249,12 @@ export class CouponService {
         // Process in FIFO order (by default BullMQ processes in order)
         removeOnComplete: { age: 3600, count: 100 },
         removeOnFail: { age: 86400 },
-        attempts: 3,
+        // Reduced attempts: session status is checked before queuing, so failures are rare
+        // Most failures will be non-retryable (session closed, coupon not found, etc.)
+        attempts: 1, // Fail fast - session closure and other non-retryable errors shouldn't retry
         backoff: {
           type: 'exponential',
-          delay: 1000,
+          delay: 500, // Minimal delay since we're only attempting once
         },
       },
     );
