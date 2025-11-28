@@ -201,6 +201,7 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
     await this.ensureOpeningSessionSyncJob();
     await this.scheduleSalesSyncJob();
     await this.scheduleOrphanCouponProcessingJob();
+    await this.scheduleStopSessionsJob();
   }
 
   private async ensureOpeningSessionSyncJob(): Promise<void> {
@@ -271,6 +272,45 @@ export class BullmqModule implements OnModuleInit, OnModuleDestroy {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Failed to schedule sales sync job: ${errMsg}`);
+    }
+  }
+
+  private async scheduleStopSessionsJob(): Promise<void> {
+    // Run every 5 minutes to check for LIVE sessions that need stop jobs scheduled
+    // The handler itself checks if there are LIVE sessions before doing work (optimized)
+    const intervalMinutes = 5;
+    const intervalMs = intervalMinutes * 60 * 1000;
+
+    try {
+      const jobs = await this.getRepeatableJobs();
+      const existing = jobs.find((j) => j.name === 'schedule-stop-sessions');
+      if (existing) {
+        await this.removeRepeatableJob(existing);
+        this.logger.log(
+          'Removed existing schedule-stop-sessions recurring job',
+        );
+      }
+
+      // Schedule recurring job - runs every N minutes
+      // The handler checks for LIVE sessions first, so it's efficient
+      await this.sessionQueue.add(
+        'schedule-stop-sessions',
+        {},
+        {
+          repeat: { every: intervalMs },
+          removeOnComplete: { age: 3600, count: 10 },
+          removeOnFail: { age: 86400 },
+          attempts: 2, // Retry once if fails
+          backoff: { type: 'exponential' as const, delay: 5000 },
+        },
+      );
+
+      this.logger.log(
+        `Scheduled stop sessions job every ${intervalMinutes} min(s) - only processes if LIVE sessions exist`,
+      );
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to schedule stop sessions job: ${errMsg}`);
     }
   }
 
