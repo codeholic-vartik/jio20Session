@@ -8,5 +8,6 @@
 - REDIS_BULLMQ_URL: Redis for BullMQ (optional, falls back to REDIS_URL)
 - REDIS_DB: Redis database index for general usage (default 0)
 - REDIS_BULLMQ_DB: Redis database index for BullMQ connections (optional, defaults to REDIS_DB)
-- SENTRY_DSN: Sentry DSN (optional)
+- SENTRY_DSN: Sentry DSN (optional, enables error tracking and performance monitoring)
+- SENTRY_RELEASE: Sentry release version (optional, for release tracking)
 - WEBSOCKET_NAMESPACE: Socket.IO namespace path (default /ws/v1/session/)

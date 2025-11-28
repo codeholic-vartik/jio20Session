@@ -37,6 +37,7 @@ const envSchema = z.object({
       },
     ),
   SENTRY_DSN: z.string().optional(),
+  SENTRY_RELEASE: z.string().optional(),
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
