@@ -145,6 +145,23 @@ const envSchema = z.object({
     .describe(
       'If true, invalidates all remaining coupons for a user in a session when they reach MAX_SESSION_COUPON_APPLY limit.',
     ),
+  SESSION_REDIS_TTL_DAYS: z
+    .string()
+    .optional()
+    .default('30')
+    .refine(
+      (value) =>
+        /^\d+$/.test(value) &&
+        Number.parseInt(value, 10) > 0 &&
+        Number.parseInt(value, 10) <= 365,
+      {
+        message:
+          'SESSION_REDIS_TTL_DAYS must be a positive integer between 1 and 365',
+      },
+    )
+    .describe(
+      'TTL in days for Redis session keys after session completion. Keys will auto-expire after this duration. Default: 30 days.',
+    ),
 });
 
 function validateEnv(config: Record<string, unknown>) {
