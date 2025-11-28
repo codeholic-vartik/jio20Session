@@ -178,10 +178,70 @@ export const sessionWorker = new Worker(
       );
       return result as unknown;
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      let errorMessage = error instanceof Error ? error.message : String(error);
+      let errorDetails: string | undefined;
+
+      // Check if this is a non-retryable error (e.g., session closed, coupon not found)
+      if (
+        error &&
+        typeof error === 'object' &&
+        'name' in error &&
+        (error as { name: string }).name === 'NonRetryableError'
+      ) {
+        const nonRetryableError = error as {
+          errorCode?: string;
+          context?: Record<string, unknown>;
+        };
+        errorMessage = `[NON-RETRYABLE] ${errorMessage}`;
+        if (nonRetryableError.context) {
+          errorDetails = JSON.stringify({
+            errorCode: nonRetryableError.errorCode,
+            context: nonRetryableError.context,
+          });
+        }
+        logger.warn(
+          `Job failed (non-retryable): name=${job.name}, id=${job.id}, error=${errorMessage}${
+            errorDetails ? `, details=${errorDetails}` : ''
+          }`,
+        );
+        // Throw the error - it will be caught by BullMQ but the detailed logging above helps
+        // In production, you might want to configure job options to have fewer attempts for apply-coupon jobs
+        throw error;
+      }
+
+      // Extract detailed error information from HttpException (BadRequestException, ConflictException, etc.)
+      if (
+        error &&
+        typeof error === 'object' &&
+        'getResponse' in error &&
+        typeof (error as { getResponse: () => unknown }).getResponse ===
+          'function'
+      ) {
+        try {
+          const response = (
+            error as { getResponse: () => unknown }
+          ).getResponse();
+          if (response && typeof response === 'object') {
+            errorDetails = JSON.stringify(response);
+            // Extract message from response if available
+            if ('msg' in response && typeof response.msg === 'string') {
+              errorMessage = response.msg;
+            } else if (
+              'message' in response &&
+              typeof response.message === 'string'
+            ) {
+              errorMessage = response.message;
+            }
+          }
+        } catch {
+          // Ignore errors extracting response details
+        }
+      }
+
       logger.error(
-        `Job failed: name=${job.name}, id=${job.id}, error=${errorMessage}`,
+        `Job failed: name=${job.name}, id=${job.id}, error=${errorMessage}${
+          errorDetails ? `, details=${errorDetails}` : ''
+        }`,
         error instanceof Error ? error.stack : undefined,
       );
       throw error; // Re-throw to trigger BullMQ retry mechanism
