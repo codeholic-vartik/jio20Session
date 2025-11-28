@@ -25,6 +25,7 @@ import {
   validateSessionIsOpen,
   checkAndInvalidateRemainingCouponsAfterWin,
 } from '../../../../../app/coupon/utils/coupon-validator.util';
+import { setSessionRedisTTL } from '../utils/session-redis-ttl.util';
 
 const logger: StandaloneLogger = createStandaloneLogger('ApplyCouponHandler');
 
@@ -287,6 +288,21 @@ export async function handleApplyCoupon(job: Job): Promise<{
       sessionId,
       sessionProfileId: session.session_profile_id,
     };
+
+    // Set TTL on Redis keys for this completed session
+    try {
+      await setSessionRedisTTL(sessionId);
+      logger.info(
+        `Set TTL on Redis keys for completed session ${sessionId} (max_slots reached)`,
+      );
+    } catch (ttlError) {
+      const ttlErrorMessage =
+        ttlError instanceof Error ? ttlError.message : String(ttlError);
+      logger.warn(
+        `Failed to set TTL on Redis keys for session ${sessionId}: ${ttlErrorMessage}`,
+      );
+      // Don't fail the entire operation if TTL setting fails
+    }
   }
 
   // Publish participant update

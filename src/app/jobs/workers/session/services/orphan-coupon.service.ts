@@ -1,6 +1,17 @@
 import { PrismaClient } from '@prisma/client';
 import IORedis from 'ioredis';
 import Razorpay from 'razorpay';
+// Stripe will be installed via npm install
+// Using dynamic import to handle case where package might not be installed yet
+
+let Stripe: any;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
+  Stripe = require('stripe');
+} catch {
+  // Stripe not installed yet - will be available after npm install
+  Stripe = null;
+}
 import {
   createStandaloneLogger,
   StandaloneLogger,
@@ -8,6 +19,7 @@ import {
 import { SessionStatus } from '../../../../../common/types/enums/session-status.enum';
 import { createSalesSyncRedisConnection } from '../config/redis.config';
 import { getRazorpayConfig } from '../config/razorpay.config';
+import { getStripeConfig } from '../config/stripe.config';
 
 const logger: StandaloneLogger = createStandaloneLogger('OrphanCouponService');
 const db = new PrismaClient();
@@ -390,8 +402,281 @@ export const OrphanCouponService = {
   },
 
   /**
+   * Processes Razorpay refund for a payment
+   * @private
+   */
+  processRazorpayRefund: async (
+    transaction: {
+      payment_id: string;
+      amount: number;
+      currency: string | null;
+    },
+    orderId: string,
+    couponId: number,
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      // Get Razorpay credentials from config
+      const razorpayConfig = getRazorpayConfig();
+
+      // Validate Razorpay credentials
+      if (!razorpayConfig.client || !razorpayConfig.secret) {
+        logger.error(
+          `Razorpay credentials not configured. Cannot process refund for order ${orderId}, coupon ${couponId}. Please configure RAZORPAY_CLIENT and RAZORPAY_SECRET environment variables.`,
+        );
+        return {
+          success: false,
+          message: 'Razorpay credentials not configured',
+        };
+      }
+
+      // Initialize Razorpay client
+      const razorpay = new Razorpay({
+        key_id: razorpayConfig.client,
+        key_secret: razorpayConfig.secret,
+      });
+
+      // Convert amount to paise (Razorpay uses smallest currency unit)
+      // transaction.amount is Decimal, convert to number and multiply by 100
+      const amountInPaise = Math.round(Number(transaction.amount) * 100);
+
+      // Create refund using Razorpay SDK
+      // Razorpay automatically processes refund to user's original payment method
+      const refundData: {
+        amount: number;
+        notes?: Record<string, string>;
+      } = {
+        amount: amountInPaise, // Amount in paise
+        notes: {
+          reason: 'No upcoming session available',
+          order_id: orderId,
+          coupon_id: couponId.toString(),
+        },
+      };
+
+      logger.info(
+        `Processing Razorpay refund for payment ${transaction.payment_id}, order ${orderId}, amount: ${amountInPaise} paise (₹${(amountInPaise / 100).toFixed(2)})`,
+      );
+
+      // Create refund using payments.refund() method
+      const refund = await razorpay.payments.refund(
+        transaction.payment_id,
+        refundData,
+      );
+
+      // Log refund details - Razorpay automatically processes refund to user's original payment method
+      logger.info(
+        `Razorpay refund created successfully for order ${orderId}, coupon ${couponId}. Refund ID: ${refund.id}, Status: ${refund.status}, Amount: ${refund.amount} paise (₹${(refund.amount / 100).toFixed(2)}). Refund will be processed to user's original payment method.`,
+      );
+
+      // Additional info about refund processing
+      if (refund.status === 'processed') {
+        logger.info(
+          `Refund ${refund.id} has been processed and funds have been returned to the user.`,
+        );
+      } else if (refund.status === 'pending') {
+        logger.info(
+          `Refund ${refund.id} is pending. Razorpay will process it to the user's account within 5-7 business days.`,
+        );
+      }
+
+      return {
+        success: true,
+        message: `Refund processed successfully. Refund ID: ${refund.id}, Status: ${refund.status}. Amount ₹${(refund.amount / 100).toFixed(2)} will be refunded to user's payment method.`,
+      };
+    } catch (razorpayError: unknown) {
+      let errorMessage: string;
+      let detailedError: string;
+
+      // Check if it's a Razorpay API error with more details
+      if (
+        razorpayError &&
+        typeof razorpayError === 'object' &&
+        'error' in razorpayError
+      ) {
+        const apiError = razorpayError as { error: { description?: string } };
+        if (apiError.error?.description) {
+          detailedError = apiError.error.description;
+          errorMessage = detailedError;
+        } else {
+          errorMessage = JSON.stringify(razorpayError);
+          detailedError = errorMessage;
+        }
+      } else if (razorpayError instanceof Error) {
+        errorMessage = razorpayError.message;
+        detailedError = errorMessage;
+      } else {
+        errorMessage = JSON.stringify(razorpayError);
+        detailedError = errorMessage;
+      }
+
+      logger.error(
+        `Failed to process Razorpay refund for order ${orderId}, coupon ${couponId}: ${detailedError}`,
+        razorpayError instanceof Error ? razorpayError.stack : undefined,
+      );
+
+      return {
+        success: false,
+        message: `Razorpay refund failed: ${detailedError}`,
+      };
+    }
+  },
+
+  /**
+   * Processes Stripe refund for a payment
+   * @private
+   */
+  processStripeRefund: async (
+    transaction: {
+      payment_id: string;
+      amount: number;
+      currency: string | null;
+    },
+    orderId: string,
+    couponId: number,
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      // Get Stripe credentials from config
+      const stripeConfig = getStripeConfig();
+
+      // Validate Stripe credentials
+      if (!stripeConfig.secretKey) {
+        logger.error(
+          `Stripe credentials not configured. Cannot process refund for order ${orderId}, coupon ${couponId}. Please configure STRIPE_SECRET_KEY environment variable.`,
+        );
+        return {
+          success: false,
+          message: 'Stripe credentials not configured',
+        };
+      }
+
+      // Check if Stripe is available
+      if (!Stripe) {
+        throw new Error(
+          'Stripe package is not installed. Please run: npm install stripe',
+        );
+      }
+
+      // Initialize Stripe client
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call
+      const stripe = new Stripe(stripeConfig.secretKey, {
+        apiVersion: '2024-12-18.acacia',
+      });
+
+      // Convert amount to cents (Stripe uses smallest currency unit)
+      // transaction.amount is Decimal, convert to number and multiply by 100
+      const amountInCents = Math.round(Number(transaction.amount) * 100);
+
+      logger.info(
+        `Processing Stripe refund for payment ${transaction.payment_id}, order ${orderId}, amount: ${amountInCents} cents (₹${(amountInCents / 100).toFixed(2)})`,
+      );
+
+      // Detect the type of Stripe ID and use appropriate parameter
+      // Charge IDs start with 'ch_', Payment Intent IDs start with 'pi_'
+      const paymentId = transaction.payment_id;
+      const isChargeId = paymentId.startsWith('ch_');
+      const isPaymentIntentId = paymentId.startsWith('pi_');
+
+      if (!isChargeId && !isPaymentIntentId) {
+        logger.error(
+          `Invalid Stripe payment ID format: ${paymentId}. Expected charge ID (ch_...) or payment intent ID (pi_...)`,
+        );
+        return {
+          success: false,
+          message: `Invalid Stripe payment ID format. Expected charge ID (ch_...) or payment intent ID (pi_...), got: ${paymentId}`,
+        };
+      }
+
+      // Prepare refund parameters based on ID type
+      const refundParams: {
+        amount: number;
+        metadata: Record<string, string>;
+        charge?: string;
+        payment_intent?: string;
+      } = {
+        amount: amountInCents,
+        metadata: {
+          reason: 'No upcoming session available',
+          order_id: orderId,
+          coupon_id: couponId.toString(),
+        },
+      };
+
+      if (isChargeId) {
+        refundParams.charge = paymentId;
+        logger.info(`Using charge ID for refund: ${paymentId}`);
+      } else if (isPaymentIntentId) {
+        refundParams.payment_intent = paymentId;
+        logger.info(`Using payment intent ID for refund: ${paymentId}`);
+      }
+
+      // Create refund using Stripe SDK
+      // Stripe automatically processes refund to user's original payment method
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+      const refund = (await stripe.refunds.create(refundParams)) as {
+        id: string;
+        status: string;
+        amount: number;
+      };
+
+      // Log refund details
+      logger.info(
+        `Stripe refund created successfully for order ${orderId}, coupon ${couponId}. Refund ID: ${refund.id}, Status: ${refund.status}, Amount: ${refund.amount} cents (₹${(refund.amount / 100).toFixed(2)}). Refund will be processed to user's original payment method.`,
+      );
+
+      // Additional info about refund processing
+      if (refund.status === 'succeeded') {
+        logger.info(
+          `Refund ${refund.id} has been processed and funds have been returned to the user.`,
+        );
+      } else if (refund.status === 'pending') {
+        logger.info(
+          `Refund ${refund.id} is pending. Stripe will process it to the user's account within 5-10 business days.`,
+        );
+      }
+
+      return {
+        success: true,
+        message: `Refund processed successfully. Refund ID: ${refund.id}, Status: ${refund.status}. Amount ₹${(refund.amount / 100).toFixed(2)} will be refunded to user's payment method.`,
+      };
+    } catch (stripeError: unknown) {
+      let errorMessage: string;
+      let detailedError: string;
+
+      // Check if it's a Stripe API error with more details
+      if (
+        stripeError &&
+        typeof stripeError === 'object' &&
+        'type' in stripeError &&
+        'message' in stripeError
+      ) {
+        // Stripe error object
+        const stripeErr = stripeError as { message: string; type?: string };
+        detailedError = stripeErr.message;
+        errorMessage = detailedError;
+      } else if (stripeError instanceof Error) {
+        errorMessage = stripeError.message;
+        detailedError = errorMessage;
+      } else {
+        errorMessage = JSON.stringify(stripeError);
+        detailedError = errorMessage;
+      }
+
+      logger.error(
+        `Failed to process Stripe refund for order ${orderId}, coupon ${couponId}: ${detailedError}`,
+        stripeError instanceof Error ? stripeError.stack : undefined,
+      );
+
+      return {
+        success: false,
+        message: `Stripe refund failed: ${detailedError}`,
+      };
+    }
+  },
+
+  /**
    * Processes refund for a coupon when no upcoming sessions are available
-   * Uses Razorpay SDK to create a refund directly via API
+   * Supports multiple payment gateways (Razorpay, Stripe)
+   * Automatically detects payment gateway from transaction and routes to appropriate handler
    */
   processRefund: async (
     orderId: string,
@@ -408,16 +693,16 @@ export const OrphanCouponService = {
         };
       }
 
-      // Get transaction details for the order
+      // Get transaction details for the order (without filtering by payment_gateway)
       const transaction = await db.transactions.findFirst({
         where: {
           orders: {
             ouid: orderId,
           },
-          payment_gateway: 'razorpay',
         },
         select: {
           payment_id: true,
+          payment_gateway: true,
           amount: true,
           currency: true,
         },
@@ -425,80 +710,52 @@ export const OrphanCouponService = {
 
       if (!transaction || !transaction.payment_id) {
         logger.warn(
-          `No Razorpay transaction found for order ${orderId}, coupon ${couponId}`,
+          `No transaction found for order ${orderId}, coupon ${couponId}`,
         );
         return {
           success: false,
-          message: 'No Razorpay transaction found for this order',
+          message: 'No transaction found for this order',
         };
       }
 
-      // Get Razorpay credentials from config
-      const razorpayConfig = getRazorpayConfig();
+      // Normalize payment gateway name (case-insensitive)
+      const paymentGateway = transaction.payment_gateway.toLowerCase();
 
-      // Validate Razorpay credentials
-      if (!razorpayConfig.client || !razorpayConfig.secret) {
-        logger.error(
-          `Razorpay credentials not configured. Cannot process refund for order ${orderId}, coupon ${couponId}. Please configure RAZORPAY_CLIENT and RAZORPAY_SECRET environment variables.`,
-        );
-        return {
-          success: false,
-          message: 'Razorpay credentials not configured',
-        };
-      }
+      // Route to appropriate refund handler based on payment gateway
+      let refundResult: { success: boolean; message: string };
 
-      try {
-        // Initialize Razorpay client
-        const razorpay = new Razorpay({
-          key_id: razorpayConfig.client,
-          key_secret: razorpayConfig.secret,
-        });
-
-        // Convert amount to paise (Razorpay uses smallest currency unit)
-        // transaction.amount is Decimal, convert to number and multiply by 100
-        const amountInPaise = Math.round(Number(transaction.amount) * 100);
-
-        // Create refund using Razorpay SDK
-        // Razorpay automatically processes refund to user's original payment method
-        const refundData: {
-          amount: number;
-          notes?: Record<string, string>;
-        } = {
-          amount: amountInPaise, // Amount in paise
-          notes: {
-            reason: 'No upcoming session available',
-            order_id: orderId,
-            coupon_id: couponId.toString(),
+      if (paymentGateway === 'razorpay') {
+        refundResult = await OrphanCouponService.processRazorpayRefund(
+          {
+            payment_id: transaction.payment_id,
+            amount: Number(transaction.amount),
+            currency: transaction.currency,
           },
+          orderId,
+          couponId,
+        );
+      } else if (paymentGateway === 'stripe') {
+        refundResult = await OrphanCouponService.processStripeRefund(
+          {
+            payment_id: transaction.payment_id,
+            amount: Number(transaction.amount),
+            currency: transaction.currency,
+          },
+          orderId,
+          couponId,
+        );
+      } else {
+        logger.error(
+          `Unsupported payment gateway: ${paymentGateway} for order ${orderId}, coupon ${couponId}`,
+        );
+        return {
+          success: false,
+          message: `Unsupported payment gateway: ${paymentGateway}. Supported gateways: razorpay, stripe`,
         };
+      }
 
-        logger.info(
-          `Processing Razorpay refund for payment ${transaction.payment_id}, order ${orderId}, amount: ${amountInPaise} paise (₹${(amountInPaise / 100).toFixed(2)})`,
-        );
-
-        // Create refund using payments.refund() method
-        const refund = await razorpay.payments.refund(
-          transaction.payment_id,
-          refundData,
-        );
-
-        // Log refund details - Razorpay automatically processes refund to user's original payment method
-        logger.info(
-          `Razorpay refund created successfully for order ${orderId}, coupon ${couponId}. Refund ID: ${refund.id}, Status: ${refund.status}, Amount: ${refund.amount} paise (₹${(refund.amount / 100).toFixed(2)}). Refund will be processed to user's original payment method.`,
-        );
-
-        // Additional info about refund processing
-        if (refund.status === 'processed') {
-          logger.info(
-            `Refund ${refund.id} has been processed and funds have been returned to the user.`,
-          );
-        } else if (refund.status === 'pending') {
-          logger.info(
-            `Refund ${refund.id} is pending. Razorpay will process it to the user's account within 5-7 business days.`,
-          );
-        }
-
-        // Mark the session coupon as invalid after successful refund
+      // If refund was successful, mark coupon as invalid
+      if (refundResult.success) {
         try {
           await db.session_coupons.update({
             where: { id: couponId },
@@ -519,47 +776,9 @@ export const OrphanCouponService = {
           // Don't fail the entire refund if coupon update fails
           // The refund was successful, so we still return success
         }
-
-        return {
-          success: true,
-          message: `Refund processed successfully. Refund ID: ${refund.id}, Status: ${refund.status}. Amount ₹${(refund.amount / 100).toFixed(2)} will be refunded to user's payment method.`,
-        };
-      } catch (razorpayError: unknown) {
-        let errorMessage: string;
-        let detailedError: string;
-
-        // Check if it's a Razorpay API error with more details
-        if (
-          razorpayError &&
-          typeof razorpayError === 'object' &&
-          'error' in razorpayError
-        ) {
-          const apiError = razorpayError as { error: { description?: string } };
-          if (apiError.error?.description) {
-            detailedError = apiError.error.description;
-            errorMessage = detailedError;
-          } else {
-            errorMessage = JSON.stringify(razorpayError);
-            detailedError = errorMessage;
-          }
-        } else if (razorpayError instanceof Error) {
-          errorMessage = razorpayError.message;
-          detailedError = errorMessage;
-        } else {
-          errorMessage = JSON.stringify(razorpayError);
-          detailedError = errorMessage;
-        }
-
-        logger.error(
-          `Failed to process Razorpay refund for order ${orderId}, coupon ${couponId}: ${detailedError}`,
-          razorpayError instanceof Error ? razorpayError.stack : undefined,
-        );
-
-        return {
-          success: false,
-          message: `Razorpay refund failed: ${detailedError}`,
-        };
       }
+
+      return refundResult;
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
