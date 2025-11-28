@@ -23,10 +23,9 @@ if (dsn) {
     // Performance Monitoring - traces sample rate
     // Controls the percentage of transactions that are sent to Sentry
     // 1.0 = 100% of transactions, 0.1 = 10% of transactions
-    tracesSampleRate,
-    // Enable automatic instrumentation for HTTP requests, database queries, etc.
+    // Tracing is automatically enabled when tracesSampleRate is set
     // The SentryModule.forRoot() in app.module.ts enables NestJS-specific tracing
-    enableTracing: true,
+    tracesSampleRate,
   });
 
   console.log(
