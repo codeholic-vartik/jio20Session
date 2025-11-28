@@ -3,13 +3,14 @@
  * @description Handles transition of sessions from OPENING to LIVE status
  */
 
-import { Job } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import { PrismaClient } from '@prisma/client';
 import { startLiveSession } from '../../session-transition.helper';
 import {
   createStandaloneLogger,
   StandaloneLogger,
 } from '../../../../../common/logger/logger.util';
+import { createRedisConnection } from '../config/redis.config';
 
 const logger: StandaloneLogger = createStandaloneLogger('StartLiveHandler');
 const prisma = new PrismaClient();
@@ -64,6 +65,36 @@ export async function handleStartLive(job: Job): Promise<{
       logger.info(
         `Session ${sessionId} transitioned from OPENING to LIVE successfully`,
       );
+
+      // Trigger schedule-stop-sessions job to ensure stop job is scheduled for this LIVE session
+      // This ensures the session will be automatically stopped based on trigger values
+      try {
+        const queueConnection = createRedisConnection();
+        const sessionQueue = new Queue('session-jobs', {
+          connection: queueConnection,
+        });
+
+        // Trigger schedule-stop-sessions immediately to schedule stop job for this session
+        await sessionQueue.add(
+          'schedule-stop-sessions',
+          {},
+          {
+            removeOnComplete: { age: 3600, count: 10 },
+            removeOnFail: { age: 86400 },
+          },
+        );
+
+        logger.debug(
+          `Triggered schedule-stop-sessions job after session ${sessionId} became LIVE`,
+        );
+      } catch (scheduleError) {
+        // Log but don't fail the start-live operation if scheduling fails
+        // The recurring job will catch this session later
+        logger.warn(
+          `Failed to trigger schedule-stop-sessions after session ${sessionId} became LIVE: ${scheduleError instanceof Error ? scheduleError.message : String(scheduleError)}`,
+        );
+      }
+
       return {
         transitioned: true,
         sessionId,
