@@ -109,6 +109,30 @@ export class CouponController {
         job_id: { type: 'string', nullable: true },
         job_state: { type: 'string', nullable: true },
         message: { type: 'string' },
+        reward_product: {
+          type: 'object',
+          nullable: true,
+          properties: {
+            puid: { type: 'string' },
+            slug: { type: 'string' },
+            title: { type: 'string' },
+            description: { type: 'string', nullable: true },
+            sku: { type: 'string', nullable: true },
+            original_price: { type: 'number' },
+            current_price: { type: 'number' },
+            images: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  piuid: { type: 'string' },
+                  image_url: { type: 'string' },
+                  is_primary: { type: 'boolean', nullable: true },
+                },
+              },
+            },
+          },
+        },
       },
     },
   })

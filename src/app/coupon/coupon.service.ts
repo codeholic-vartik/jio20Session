@@ -289,6 +289,20 @@ export class CouponService {
     job_id: string | null;
     job_state: string | null;
     message: string;
+    reward_product: {
+      puid: string;
+      slug: string;
+      title: string;
+      description: string | null;
+      sku: string | null;
+      original_price: number;
+      current_price: number;
+      images: Array<{
+        piuid: string;
+        image_url: string;
+        is_primary: boolean | null;
+      }>;
+    } | null;
   }> {
     // Find coupon
     let coupon = await this.findCouponByCodeForStatus(plainCouponCode);
@@ -315,6 +329,7 @@ export class CouponService {
         job_id: null,
         job_state: null,
         message: 'Coupon not found',
+        reward_product: null,
       };
     }
 
@@ -347,6 +362,7 @@ export class CouponService {
         job_id: null,
         job_state: null,
         message: 'Coupon not found or you do not own this coupon',
+        reward_product: null,
       };
     }
 
@@ -377,6 +393,69 @@ export class CouponService {
 
     // If already applied, return status
     if (isApplied) {
+      // Fetch reward product details if winner
+      let rewardProduct: {
+        puid: string;
+        slug: string;
+        title: string;
+        description: string | null;
+        sku: string | null;
+        original_price: number;
+        current_price: number;
+        images: Array<{
+          piuid: string;
+          image_url: string;
+          is_primary: boolean | null;
+        }>;
+      } | null = null;
+      if (isWinner) {
+        try {
+          const reward = await this.prisma.session_rewards.findFirst({
+            where: {
+              session_coupon_id: coupon.id,
+              user_id: userId,
+            },
+            include: {
+              products: {
+                include: {
+                  product_images: {
+                    select: {
+                      id: true,
+                      piuid: true,
+                      image_url: true,
+                      is_primary: true,
+                    },
+                    orderBy: [{ is_primary: 'desc' }, { id: 'asc' }],
+                  },
+                },
+              },
+            },
+          });
+
+          if (reward?.products) {
+            const product = reward.products;
+            rewardProduct = {
+              puid: product.puid,
+              slug: product.slug,
+              title: product.title,
+              description: product.description,
+              sku: product.sku,
+              original_price: Number(product.original_price),
+              current_price: Number(product.current_price),
+              images: product.product_images.map((img) => ({
+                piuid: img.piuid,
+                image_url: img.image_url,
+                is_primary: img.is_primary,
+              })),
+            };
+          }
+        } catch (error) {
+          this.logger.warn(
+            `Failed to load reward product: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
       return {
         coupon_code: couponCode,
         session_suid: sessionSuid,
@@ -391,6 +470,7 @@ export class CouponService {
         message: isWinner
           ? 'Coupon applied and you won!'
           : 'Coupon applied but not a winner',
+        reward_product: rewardProduct,
       };
     }
 
@@ -410,6 +490,7 @@ export class CouponService {
         job_id: jobInfo.jobId,
         job_state: jobInfo.state,
         message: `Coupon application is ${jobInfo.state} in queue`,
+        reward_product: null,
       };
     }
 
@@ -426,6 +507,7 @@ export class CouponService {
       job_id: null,
       job_state: null,
       message: 'Coupon has not been applied yet',
+      reward_product: null,
     };
   }
 
