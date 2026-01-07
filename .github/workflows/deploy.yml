@@ -52,6 +52,6 @@ jobs:
             git fetch --prune origin
             git checkout -B develop origin/develop
 
-            npm install
+            npm ci
             npm run build
             pm2 restart "$PM2_APP_NAME" || pm2 start dist/src/main.js --name "$PM2_APP_NAME"
